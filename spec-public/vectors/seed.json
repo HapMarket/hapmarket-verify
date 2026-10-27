@@ -1,0 +1,56 @@
+{
+  "vectorFormat": 1,
+  "subject": "seed",
+  "status": "complete",
+  "$comment": "Computed values, made by two independent passes from PUBLIC-SPEC.md section 4, 'Where the seed comes from', alone. METHOD: seed = uint256(keccak256(abi.encode(outputSeed, 0))); abi.encode pads both uint256 arguments to 32-byte big-endian words, so the preimage is exactly 64 bytes: outputSeed, then 32 zero bytes. 'preimage' is a second assertion that localises a failure to encoding rather than hashing. Each case exists to fail a specific wrong implementation; see its description. The Chainlink detail behind the formula - that VRFCoordinatorV2_5 derives randomWords[i] as keccak256(abi.encode(randomness, i)) and logs randomness as outputSeed in RandomWordsFulfilled - was read from @chainlink/contracts 1.5.0 source while drafting the prose, before these values were computed. PROVENANCE: Pass A: Claude (an AI), in Python with a generic keccak256 library, no implementation consulted. Claude also drafted part of the prose, so a disagreement was to be read as possible evidence the text is unclear, not only as a miscomputation. Its keccak256 primitive was verified against the published empty-input hash. Pass B, 2026-10-02: a second person, on a separate machine, with no access to this file or to pass A's method or terminal, in JavaScript with ethers v6. All four seeds agreed exactly, and pass B independently described the 64-byte preimage for each, all four matching 'preimage'. Pass B recorded as read from the prose, not decided: argument order (outputSeed, 0); the index as uint256 rather than bytes32, uint8 or omitted; abi.encode rather than abi.encodePacked. Format: vectors/FORMAT.md.",
+  "cases": [
+    {
+      "name": "zeroOutputSeed",
+      "description": "outputSeed of zero. The 64-byte preimage is all zeros. Fails an implementation that returns outputSeed unhashed, and one that hashes only the 32-byte outputSeed and omits the index word.",
+      "input": {
+        "outputSeed": "0x0000000000000000000000000000000000000000000000000000000000000000"
+      },
+      "expect": {
+        "outcome": "seed",
+        "value": "0xad3228b676f7d3cd4284a5443f17f1962b36e491b30a40b2405849e597ba5fb5",
+        "preimage": "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+      }
+    },
+    {
+      "name": "oneOutputSeed",
+      "description": "outputSeed of one. Pins big-endian left-padding: an implementation that pads little-endian, or right-pads the value, puts the 0x01 byte in the wrong position and produces a different preimage.",
+      "input": {
+        "outputSeed": "0x0000000000000000000000000000000000000000000000000000000000000001"
+      },
+      "expect": {
+        "outcome": "seed",
+        "value": "0xada5013122d395ba3c54772283fb069b10426056ef8ca54750cb9bb552a59e7d",
+        "preimage": "0x00000000000000000000000000000000000000000000000000000000000000010000000000000000000000000000000000000000000000000000000000000000"
+      }
+    },
+    {
+      "name": "maxOutputSeed",
+      "description": "outputSeed of 2^256-1. Fails an implementation that parses the value through a double or any integer type narrower than 256 bits, which truncates or rounds before encoding.",
+      "input": {
+        "outputSeed": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+      },
+      "expect": {
+        "outcome": "seed",
+        "value": "0xbbd6e7dddd4326dd7c827841ab9733c6e3fcdf38a516374bd10feec8f674ea8a",
+        "preimage": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff0000000000000000000000000000000000000000000000000000000000000000"
+      }
+    },
+    {
+      "name": "fullEntropyOutputSeed",
+      "description": "A realistic full-entropy outputSeed. The common path. Fails an implementation that uses index 1 rather than 0, or hashes the hex text of the value rather than its bytes.",
+      "input": {
+        "outputSeed": "0x9f3a61c2e87b4d05a1f6c38e27d94b01e5c8a36f72d10b94c3e5f8a61d27b09e"
+      },
+      "expect": {
+        "outcome": "seed",
+        "value": "0x8eba704ecf2a4f59f52eaf681b7d7912f3368dbc7e9ee6b974ad2584ccb87b6f",
+        "preimage": "0x9f3a61c2e87b4d05a1f6c38e27d94b01e5c8a36f72d10b94c3e5f8a61d27b09e0000000000000000000000000000000000000000000000000000000000000000"
+      }
+    }
+  ]
+}

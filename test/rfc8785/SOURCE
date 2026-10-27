@@ -1,0 +1,12 @@
+RFC 8785 (JCS) conformance test data, vendored unchanged.
+
+Source:  https://github.com/cyberphone/json-canonicalization/tree/dc406ceaf94b5fa554fcabb92c091089c2357e83/testdata
+Commit:  dc406ceaf94b5fa554fcabb92c091089c2357e83 (testdata last changed 2021-08-23)
+Author:  Anders Rundgren, co-author of RFC 8785
+Licence: Apache License 2.0, see LICENSE in this directory
+Copied:  2026-10-26
+
+input/ and output/ are byte-for-byte copies; do not edit them. The
+100-million-line ES6 number file from the same source is not vendored: it
+exercises ECMAScript Number serialization, which jcs.ts takes from the
+platform rather than implementing.

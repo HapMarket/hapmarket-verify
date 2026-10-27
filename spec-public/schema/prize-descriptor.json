@@ -1,0 +1,90 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:hapmarket:schema:prize-descriptor:1",
+  "title": "Prize descriptor, schema version 1",
+  "$comment": "Canonical serialization is RFC 8785 (JCS) plus the five local constraints in PUBLIC-SPEC.md §9. This file constrains the INPUT; JCS constrains the OUTPUT. See schema/CANONICAL.md. Fully enforced here: ASCII keys, schemaVersion, no null. NOT enforceable in JSON Schema and checked at load time instead: NFC normalization, and float-token rejection (JSON Schema treats 1.0 as a valid integer). schemaVersion denotes THE FIELD SET: any field-set change bumps it, optional additions included; enum value additions do not. Field limits are sized against a real prize record, roughly 3x the largest plausible value: a name of 200 characters, at most 24 specification attributes of 160 characters, at most 12 image references of 256. They count CHARACTERS, not bytes — a UTF-8 character takes up to four — so they do NOT bound descriptor size; the 16384-byte cap in PUBLIC-SPEC.md §9 is a loader check for exactly that reason.",
+
+  "type": "object",
+  "additionalProperties": false,
+  "propertyNames": { "$ref": "#/$defs/asciiKey" },
+
+  "required": ["schemaVersion", "name", "category", "condition", "images"],
+
+  "properties": {
+    "schemaVersion": {
+      "$comment": "const, not a free integer. A descriptor keeps the version it was authored under; the hashing function branches on it (PUBLIC-SPEC.md §9 constraint 4). This value names exactly one field set, so the branch is a lookup rather than a judgement.",
+      "const": 1
+    },
+
+    "name": {
+      "$comment": "English. Translations are not part of the hashed descriptor.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+
+    "category": {
+      "$comment": "APPEND-ONLY: never renamed, never removed, NEVER BRANCHED ON (PUBLIC-SPEC.md §9). Adding a value does not bump schemaVersion; the field set is unchanged. These are identifiers, not display text — the strings a user sees are kept outside the descriptor and are translatable, so do not rename a value to make it read nicely. The launch set is deliberately narrow; the reasons for each value are a product decision, not a verification rule, and are not recorded here.",
+      "allOf": [
+        { "$ref": "#/$defs/enumIdentifier" },
+        { "enum": ["electronics", "fashion", "homeAndLiving"] }
+      ]
+    },
+
+    "condition": {
+      "$comment": "One value, deliberately. Same append-only and no-branching rules as category. Whether to add further values is a product decision outside the verification protocol.",
+      "allOf": [
+        { "$ref": "#/$defs/enumIdentifier" },
+        { "enum": ["new"] }
+      ]
+    },
+
+    "images": {
+      "$comment": "Image references, as opaque strings. No filename pattern by design: the descriptor must not encode a storage naming convention it does not control. A pattern would make a cosmetic change to object-storage naming into a schema version bump, and a verifier never needs to parse the filename to reproduce the hash. Array order is display order and IS part of the hash. uniqueItems prevents one image set having two canonical forms.",
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 12,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 256
+      }
+    },
+
+    "specification": {
+      "$comment": "Optional. An OBJECT, not an array: JCS sorts object keys, so two authors listing the same attributes in different orders produce identical bytes. An array would preserve order and give the same prize two hashes.",
+      "type": "object",
+      "propertyNames": { "$ref": "#/$defs/asciiKey" },
+      "additionalProperties": {
+        "type": "string",
+        "minLength": 0,
+        "maxLength": 160
+      },
+      "maxProperties": 24
+    }
+  },
+
+  "$defs": {
+    "asciiKey": {
+      "$comment": "PUBLIC-SPEC.md §9 constraint 1. ASCII-only keys make JCS's UTF-16 key ordering unreachable, so no implementation can sort wrongly.",
+      "type": "string",
+      "pattern": "^[a-z][a-zA-Z0-9]*$",
+      "maxLength": 64
+    },
+
+    "enumIdentifier": {
+      "$comment": "Enum values are machine identifiers, same character set as keys. Redundant alongside the enum lists on purpose: it makes a non-conforming future append fail at the first descriptor that uses it, rather than passing silently. ASCII-only means these values are permanently out of reach of the NFC check — there is no reason an identifier the operator controls should carry a combining character — and it means they sort identically under UTF-16 and UTF-8, so if anything ever sorts them the question does not arise.",
+      "type": "string",
+      "pattern": "^[a-z][a-zA-Z0-9]*$",
+      "maxLength": 64
+    },
+
+    "safeInteger": {
+      "$comment": "PUBLIC-SPEC.md §9 constraint 2. No numeric field currently uses this. Any numeric field added later MUST $ref it. Values above the ceiling are string fields.",
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    }
+  }
+}

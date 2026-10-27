@@ -1,0 +1,80 @@
+{
+  "vectorFormat": 1,
+  "subject": "canonicalization",
+  "status": "complete",
+  "$comment": "Computed values, made by two independent passes from RFC 8785 and PUBLIC-SPEC.md section 9. These inputs are NOT descriptors and could never be: section 9 requires a complete JCS implementation with a validating layer above it, so floats and astral keys are valid JCS input and invalid as descriptors. Inputs are raw JSON text because number tokens are parse-sensitive. All numbers are IEEE 754 doubles per RFC 8785; a parser returning exact big integers gives a different answer, which pastSafeRangeLosesPrecision pins deliberately. Number formatting is the part of JCS implementations most likely to be wrong; pass A's formatter was checked against RFC 8785 section 3.2.3's canonical sample [333333333.3333333,1e+30,4.5,0.002,1e-27] and the ECMAScript threshold values. Run the published RFC 8785 conformance suite unchanged alongside this file; these cases extend it, they do not replace it. PROVENANCE: Pass A: Claude (an AI), in Python with a generic keccak256 library, no implementation consulted. Claude also drafted part of the prose, so a disagreement was to be read as possible evidence the text is unclear, not only as a miscomputation. Pass B, 2026-09-28: a second person, on a separate machine, with no access to this file or to pass A's method, notes or terminal, in JavaScript with ethers v6 for keccak256 and ABI encoding. Different language and libraries on each side, so a shared library bug cannot make both passes wrong in the same way. All 8 values agreed exactly; astralPlaneKeySort was also cross-checked at the byte level, all 180 UTF-8 bytes matching. Pass B raised four spec-text gaps, none of them contradictions, each fixed in PUBLIC-SPEC.md without changing any value: abi.encode word widths and the empty-round value (section 3), excluded-range inclusivity (section 6), the schema file as the normative field set per schemaVersion, and the complete-JCS-plus-validating-layer shape (section 9). Format: vectors/FORMAT.md.",
+  "cases": [
+    {
+      "name": "safeIntegerBoundary",
+      "description": "The largest integer exactly representable as a double, 2^53-1. Must survive as an integer with no reformatting. This is the ceiling PUBLIC-SPEC.md section 9 puts on descriptor integers.",
+      "inputRaw": "{\"n\":9007199254740991}",
+      "expect": {
+        "outcome": "canonical",
+        "value": "{\"n\":9007199254740991}"
+      }
+    },
+    {
+      "name": "pastSafeRangeLosesPrecision",
+      "description": "2^53+1, which is NOT exactly representable. RFC 8785 requires numbers be IEEE 754 doubles, so it coerces to 9007199254740992 and the input value is silently unrecoverable. This is the whole reason PUBLIC-SPEC.md section 9 requires values outside safe integer range be strings. Note a Python json parser returns an exact int here and would wrongly emit ...993; JavaScript returns the double. The vector pins the JCS answer.",
+      "inputRaw": "{\"n\":9007199254740993}",
+      "expect": {
+        "outcome": "canonical",
+        "value": "{\"n\":9007199254740992}"
+      }
+    },
+    {
+      "name": "weiScaleAsString",
+      "description": "A wei-scale decimal carried as a string, per RFC 8785 Appendix D and PUBLIC-SPEC.md section 9. Must be emitted as a string and never coerced to a number.",
+      "inputRaw": "{\"wei\":\"1000000000000000000000000\"}",
+      "expect": {
+        "outcome": "canonical",
+        "value": "{\"wei\":\"1000000000000000000000000\"}"
+      }
+    },
+    {
+      "name": "floatFormsCollapse",
+      "description": "1, 1.0 and 1e0 are the same double and all canonicalize to 1. This is the ECMAScript Number::toString collapse JCS depends on. The descriptor layer refuses to rely on it by banning floats outright, and the canonicalizer must still implement it correctly.",
+      "inputRaw": "{\"a\":1,\"b\":1.0,\"c\":1e0}",
+      "expect": {
+        "outcome": "canonical",
+        "value": "{\"a\":1,\"b\":1,\"c\":1}"
+      }
+    },
+    {
+      "name": "numberFormattingThresholds",
+      "description": "Values that sit on the boundaries where ECMAScript switches between plain and exponential notation: 1e21 and above go exponential, below stays plain, and the low end switches at 1e-7. Implementations that reuse their language's default float formatting fail here, because most languages switch at different points.",
+      "inputRaw": "{\"a\":1e16,\"b\":1e20,\"c\":1e21,\"d\":0.000001,\"e\":1e-7}",
+      "expect": {
+        "outcome": "canonical",
+        "value": "{\"a\":10000000000000000,\"b\":100000000000000000000,\"c\":1e+21,\"d\":0.000001,\"e\":1e-7}"
+      }
+    },
+    {
+      "name": "astralPlaneKeySort",
+      "description": "RFC 8785 section 3.2.3's own key-ordering example, verbatim. Keys are sorted as arrays of UTF-16 code units, so the emoji U+1F600 sorts BEFORE U+FB33 because its leading surrogate 0xD83D is numerically below 0xFB33. Sorting by codepoint or by UTF-8 bytes gives the opposite order. Unreachable through a descriptor because constraint 1 restricts keys to ASCII, which is exactly why it must be tested here.",
+      "inputRaw": "{\"\\u20ac\":\"Euro Sign\",\"\\r\":\"Carriage Return\",\"\\ufb33\":\"Hebrew Letter Dalet With Dagesh\",\"1\":\"One\",\"\\ud83d\\ude00\":\"Emoji: Grinning Face\",\"\\u0080\":\"Control\",\"\\u00f6\":\"Latin Small Letter O With Diaeresis\"}",
+      "expect": {
+        "outcome": "canonical",
+        "value": "{\"\\r\":\"Carriage Return\",\"1\":\"One\",\"\u0080\":\"Control\",\"\u00f6\":\"Latin Small Letter O With Diaeresis\",\"\u20ac\":\"Euro Sign\",\"\ud83d\ude00\":\"Emoji: Grinning Face\",\"\ufb33\":\"Hebrew Letter Dalet With Dagesh\"}"
+      }
+    },
+    {
+      "name": "nestedUnsortedEveryLevel",
+      "description": "Keys out of order at three levels of nesting. Asserts the sort recurses all the way down rather than applying only at the top.",
+      "inputRaw": "{\"z\":{\"y\":{\"x\":3,\"a\":1},\"b\":2},\"a\":{\"d\":4,\"c\":{\"f\":6,\"e\":5}}}",
+      "expect": {
+        "outcome": "canonical",
+        "value": "{\"a\":{\"c\":{\"e\":5,\"f\":6},\"d\":4},\"z\":{\"b\":2,\"y\":{\"a\":1,\"x\":3}}}"
+      }
+    },
+    {
+      "name": "arrayOrderPreservedObjectsSorted",
+      "description": "Array element order must NOT change, while objects found inside arrays must have their keys sorted. RFC 8785 section 3.2.3 states both halves.",
+      "inputRaw": "{\"items\":[{\"b\":2,\"a\":1},{\"d\":4,\"c\":3}],\"order\":[\"z\",\"y\",\"x\"]}",
+      "expect": {
+        "outcome": "canonical",
+        "value": "{\"items\":[{\"a\":1,\"b\":2},{\"c\":3,\"d\":4}],\"order\":[\"z\",\"y\",\"x\"]}"
+      }
+    }
+  ]
+}

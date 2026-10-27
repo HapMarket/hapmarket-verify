@@ -1,0 +1,285 @@
+{
+  "vectorFormat": 1,
+  "subject": "derivation",
+  "status": "complete",
+  "$comment": "Computed values, made by two independent passes from PUBLIC-SPEC.md sections 5 and 6 alone. METHOD: idx = keccak256(abi.encode(seed, roundId, drawNonce, i)) % totalTickets, four 32-byte big-endian words, looping i upward from 0 while the index falls inside any excluded range, MAX_ATTEMPTS 256 so i runs 0..255. Excluded ranges are inclusive on both ends, like entry ranges. 'attempts' records the winning value of i and is a second assertion: an implementation that omits i from the preimage matches the index only when attempts is 0. '_firstIterationIndex' is informational, naming the index the i=0 hash produces. The four boundary cases have seeds chosen so i=0 lands exactly on 0, on totalTickets-1, and on both ends of a mid-list range; without them a broken isExcluded could pass, because the loop would exit at i=0. Seeds for the boundary, firstIterationExcluded, allButOneExcluded and approachingMaxAttempts cases were found by search. allButOneExcluded uses a full-entropy seed rather than zero, so it cannot trip an unrelated 'seed unset' guard; zero has its own deliberate case. PROVENANCE: Pass A: Claude (an AI), in Python with a generic keccak256 library, no implementation consulted. Claude also drafted part of the prose, so a disagreement was to be read as possible evidence the text is unclear, not only as a miscomputation. Pass B, 2026-09-28: a second person, on a separate machine, with no access to this file or to pass A's method, notes or terminal, in JavaScript with ethers v6 for keccak256 and ABI encoding. Different language and libraries on each side, so a shared library bug cannot make both passes wrong in the same way. All 14 cases agreed exactly. SCOPE LIMIT: 'attempts' was not part of pass B; index values carry both passes, 'attempts' carries pass A only. Pass B raised four spec-text gaps, none of them contradictions, each fixed in PUBLIC-SPEC.md without changing any value: abi.encode word widths and the empty-round value (section 3), excluded-range inclusivity (section 6), the schema file as the normative field set per schemaVersion, and the complete-JCS-plus-validating-layer shape (section 9). Format: vectors/FORMAT.md.",
+  "cases": [
+    {
+      "name": "emptyExcludedSet",
+      "description": "Original draw. Excluded set empty, so the loop exits on i=0. The common path.",
+      "input": {
+        "seed": "0x1111111111111111111111111111111111111111111111111111111111111111",
+        "roundId": "1",
+        "drawNonce": "1",
+        "totalTickets": "1000",
+        "excluded": []
+      },
+      "expect": {
+        "outcome": "index",
+        "value": "555",
+        "attempts": "0"
+      }
+    },
+    {
+      "name": "zeroSeed",
+      "description": "Seed of all zero bytes, with an empty excluded set. A VRF will not produce this, but an implementation that treats a zero seed as 'not yet fulfilled' would diverge here rather than deriving normally. Section 4 tracks fulfilment with a one-way flag, not by testing the seed, and this case pins that.",
+      "input": {
+        "seed": "0x0000000000000000000000000000000000000000000000000000000000000000",
+        "roundId": "13",
+        "drawNonce": "1",
+        "totalTickets": "1000",
+        "excluded": []
+      },
+      "expect": {
+        "outcome": "index",
+        "value": "134",
+        "attempts": "0"
+      }
+    },
+    {
+      "name": "excludedLowerBoundZero",
+      "description": "The i=0 index is exactly 0, the lower edge of excluded range (0,99), so the loop MUST step. A comparison using a strict `start < idx` wrongly accepts index 0 and returns it.",
+      "input": {
+        "seed": "0x00000000000000000000000000000000000000000000000000000000000000d2",
+        "roundId": "2",
+        "drawNonce": "2",
+        "totalTickets": "1000",
+        "excluded": [
+          {
+            "startIndex": "0",
+            "endIndex": "99"
+          }
+        ],
+        "_firstIterationIndex": "0"
+      },
+      "expect": {
+        "outcome": "index",
+        "value": "957",
+        "attempts": "1"
+      }
+    },
+    {
+      "name": "excludedUpperBoundFinal",
+      "description": "The i=0 index is exactly 999, the last ticket index and the upper edge of (900,999). A strict `idx < end` wrongly accepts it.",
+      "input": {
+        "seed": "0x00000000000000000000000000000000000000000000000000000000000005a5",
+        "roundId": "3",
+        "drawNonce": "2",
+        "totalTickets": "1000",
+        "excluded": [
+          {
+            "startIndex": "900",
+            "endIndex": "999"
+          }
+        ],
+        "_firstIterationIndex": "999"
+      },
+      "expect": {
+        "outcome": "index",
+        "value": "688",
+        "attempts": "1"
+      }
+    },
+    {
+      "name": "excludedRangeStartBoundary",
+      "description": "The i=0 index is exactly 400, the start of a mid-list range (400,599). Boundary inclusion away from the array edges.",
+      "input": {
+        "seed": "0x0000000000000000000000000000000000000000000000000000000000000171",
+        "roundId": "4",
+        "drawNonce": "2",
+        "totalTickets": "1000",
+        "excluded": [
+          {
+            "startIndex": "400",
+            "endIndex": "599"
+          }
+        ],
+        "_firstIterationIndex": "400"
+      },
+      "expect": {
+        "outcome": "index",
+        "value": "901",
+        "attempts": "1"
+      }
+    },
+    {
+      "name": "excludedRangeEndBoundary",
+      "description": "The i=0 index is exactly 599, the end of that same range.",
+      "input": {
+        "seed": "0x0000000000000000000000000000000000000000000000000000000000000622",
+        "roundId": "5",
+        "drawNonce": "2",
+        "totalTickets": "1000",
+        "excluded": [
+          {
+            "startIndex": "400",
+            "endIndex": "599"
+          }
+        ],
+        "_firstIterationIndex": "599"
+      },
+      "expect": {
+        "outcome": "index",
+        "value": "138",
+        "attempts": "1"
+      }
+    },
+    {
+      "name": "twoExcludedRangesTwoRedraws",
+      "description": "Draw nonce 3, after two forfeits. Two non-adjacent excluded ranges, one per redraw.",
+      "input": {
+        "seed": "0x1111111111111111111111111111111111111111111111111111111111111111",
+        "roundId": "6",
+        "drawNonce": "3",
+        "totalTickets": "1000",
+        "excluded": [
+          {
+            "startIndex": "100",
+            "endIndex": "199"
+          },
+          {
+            "startIndex": "700",
+            "endIndex": "799"
+          }
+        ]
+      },
+      "expect": {
+        "outcome": "index",
+        "value": "386",
+        "attempts": "1"
+      }
+    },
+    {
+      "name": "firstIterationExcluded",
+      "description": "The i=0 index falls inside the excluded range, so the loop steps to i=1. Asserts i is part of the preimage: an implementation omitting it recomputes the same index forever.",
+      "input": {
+        "seed": "0x0000000000000000000000000000000000000000000000000000000000000004",
+        "roundId": "7",
+        "drawNonce": "2",
+        "totalTickets": "100",
+        "excluded": [
+          {
+            "startIndex": "0",
+            "endIndex": "49"
+          }
+        ]
+      },
+      "expect": {
+        "outcome": "index",
+        "value": "66",
+        "attempts": "1"
+      }
+    },
+    {
+      "name": "sameSeedNonceOne",
+      "description": "Baseline for the two pinning cases below. Same seed and roundId as sameSeedNonceTwo, differing only in drawNonce.",
+      "input": {
+        "seed": "0xabababababababababababababababababababababababababababababababab",
+        "roundId": "5",
+        "drawNonce": "1",
+        "totalTickets": "1000",
+        "excluded": []
+      },
+      "expect": {
+        "outcome": "index",
+        "value": "281",
+        "attempts": "0"
+      }
+    },
+    {
+      "name": "sameSeedNonceTwo",
+      "description": "Identical to sameSeedNonceOne except drawNonce is 2, and the index differs. This is what stops a redraw reproducing the original result.",
+      "input": {
+        "seed": "0xabababababababababababababababababababababababababababababababab",
+        "roundId": "5",
+        "drawNonce": "2",
+        "totalTickets": "1000",
+        "excluded": []
+      },
+      "expect": {
+        "outcome": "index",
+        "value": "374",
+        "attempts": "0"
+      }
+    },
+    {
+      "name": "sameSeedRoundSix",
+      "description": "Identical to sameSeedNonceOne except roundId is 6, and the index differs. This is what stops a VRF fulfilment being replayed across rounds.",
+      "input": {
+        "seed": "0xabababababababababababababababababababababababababababababababab",
+        "roundId": "6",
+        "drawNonce": "1",
+        "totalTickets": "1000",
+        "excluded": []
+      },
+      "expect": {
+        "outcome": "index",
+        "value": "47",
+        "attempts": "0"
+      }
+    },
+    {
+      "name": "allButOneExcluded",
+      "description": "Every index except 9 is excluded. Asserts the loop finds the single eligible index rather than giving up, and does so after several steps.",
+      "input": {
+        "seed": "0x15737f48c127ea4183e42961da6f4a7294b4b3ec9c22400a5ff67e9097df80b8",
+        "roundId": "12",
+        "drawNonce": "2",
+        "totalTickets": "10",
+        "excluded": [
+          {
+            "startIndex": "0",
+            "endIndex": "8"
+          }
+        ]
+      },
+      "expect": {
+        "outcome": "index",
+        "value": "9",
+        "attempts": "5"
+      }
+    },
+    {
+      "name": "approachingMaxAttempts",
+      "description": "256 tickets with only index 255 eligible. The loop steps deep into the attempt budget and still succeeds, exercising the path near MAX_ATTEMPTS without reverting.",
+      "input": {
+        "seed": "0x0000000000000000000000000000000000000000000000000000000000000001",
+        "roundId": "9",
+        "drawNonce": "2",
+        "totalTickets": "256",
+        "excluded": [
+          {
+            "startIndex": "0",
+            "endIndex": "254"
+          }
+        ]
+      },
+      "expect": {
+        "outcome": "index",
+        "value": "255",
+        "attempts": "204"
+      }
+    },
+    {
+      "name": "maxAttemptsExhausted",
+      "description": "Every index excluded, so all 256 attempts fail and the call reverts NoEligibleIndex. In production this makes the round permissionlessly refundable (PUBLIC-SPEC.md section 5).",
+      "input": {
+        "seed": "0x7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f",
+        "roundId": "11",
+        "drawNonce": "3",
+        "totalTickets": "4",
+        "excluded": [
+          {
+            "startIndex": "0",
+            "endIndex": "3"
+          }
+        ]
+      },
+      "expect": {
+        "outcome": "revert",
+        "error": "NoEligibleIndex",
+        "attempts": "256"
+      }
+    }
+  ]
+}

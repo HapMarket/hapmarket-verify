@@ -1,0 +1,22 @@
+{
+  "name": "@hapmarket/verify",
+  "version": "0.0.0",
+  "private": true,
+  "license": "MIT",
+  "description": "Independently reproduce a HapMarket draw from chain data alone.",
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "test": "node --test \"test/**/*.test.ts\"",
+    "typecheck": "tsc",
+    "check:spec": "node scripts/spec-public.ts check",
+    "sync:spec": "node scripts/spec-public.ts sync",
+    "check:deps": "node scripts/check-deps.ts"
+  },
+  "devDependencies": {
+    "@types/node": "24.19.1",
+    "typescript": "7.0.2"
+  }
+}
