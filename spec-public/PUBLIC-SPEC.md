@@ -361,7 +361,7 @@ A verifier needs to know which contract to read and which block to start scannin
 
 | Chain | Chain ID | Core contract | Created in block | Creation transaction |
 |---|---|---|---|---|
-| BNB Chain testnet | 97 | `0xa0ca23bfb669acad267a1acaf142cd4b3415e759` | 139115294 | `0xf8254177dd5c0e143087c8e6947bc0c9905746d5faf72566bfdc36fb39f50217` |
+| BNB Chain testnet | 97 | `0x1d1da09ee37569fcf2351c3d0cfed43fc7d8db9d` | 139445712 | `0x9417557d4e2c2d85fb9b7ab4625b240a5feb7eba47e55e86cd9dc24f70dccc63` |
 | BNB Chain mainnet | 56 | not yet deployed | | |
 
 Scanning logs from the creation block onward is complete, because no event can come before the contract exists.

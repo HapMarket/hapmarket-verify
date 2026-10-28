@@ -14,7 +14,7 @@ export interface Deployment {
 }
 
 export const DEFAULT_CORES: readonly Deployment[] = [
-  { chainId: 97n, core: 0xa0ca23bfb669acad267a1acaf142cd4b3415e759n, fromBlock: 139115294n },
+  { chainId: 97n, core: 0x1d1da09ee37569fcf2351c3d0cfed43fc7d8db9dn, fromBlock: 139445712n },
 ];
 
 export function defaultCoreFor(chainId: bigint): Deployment | undefined {

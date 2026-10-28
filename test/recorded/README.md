@@ -12,7 +12,8 @@ a query the endpoint never answered fails instead of returning nothing. The
 
 | File | Core | Captured | What it exercises |
 |---|---|---|---|
-| `97-a0ca23bf.json` | `0xa0ca23bf…e759` (current) | 2026-10-28, NodeReal | Round 1: a plain real-VRF draw, nonce 1, settled. |
+| `97-1d1da09e.json` | `0x1d1da09e…db9d` (current, v3) | 2026-10-28, publicnode | Round 1: a plain real-VRF draw on the core with one live request per nonce, nonce 1, settled. |
+| `97-a0ca23bf.json` | `0xa0ca23bf…e759` (superseded) | 2026-10-28, NodeReal | Round 1: a plain real-VRF draw, nonce 1, settled. |
 | `97-d64634cc.json` | `0xd64634cc…5bd3` (superseded) | 2026-10-28, NodeReal | Rounds 1 and 2 running side by side. Round 1 is drawn and awaiting the Part C forfeit and redraw (claim window closes 2026-11-22 22:49:37 UTC). Re-record after the redraw. |
 | `97-fe9439c8.json` | `0xfe9439c8…d12b` (retry test) | 2026-10-28, NodeReal | Round 1: two requests at nonce 1, both fulfilled in one transaction with `success = true`. The fulfilling node chose which seed counted, so the round **fails** `vrf.oneSuccess`, and is kept as the case that proves the check works. This core predates the contract fix that allows only one live request per nonce. |
 
