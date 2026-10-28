@@ -150,6 +150,10 @@ The tests include:
   - a forged seed or an impostor coordinator;
   - a wrong winner, or a cancel or refund that voids a known outcome.
 
+[CI](.github/workflows/ci.yml) runs all of this on every change. Every day it also does two more things:
+- **Upstream spec check:** confirms `spec-public/` still matches the private specification it was copied from.
+- **Live run:** runs the command above against the chain for every testnet round, including the one that must fail.
+
 ## Licence
 
 MIT. See [LICENSE](LICENSE).

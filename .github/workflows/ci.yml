@@ -1,0 +1,104 @@
+# Every guarantee this repo makes is enforced here, so that a reader can see
+# it is checked rather than take it on trust. Actions are pinned to a commit,
+# not a tag: a tag can be moved, and this workflow is part of what a reviewer
+# is asked to trust.
+
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: '17 5 * * *' # daily: catches upstream spec drift and chain changes
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # Offline: types, conformance vectors, RFC 8785 suite, recorded draws and
+  # tampering tests, the dependency ceiling, and spec-public against its own
+  # CHECKSUMS. Needs nothing but this repo.
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run check:deps
+      - run: npm run check:spec
+
+  # spec-public/ is a copy of the public part of a private repo. This fails if
+  # the copy and its source have drifted apart in either direction, so a change
+  # upstream can never silently differ from what is published here. The source
+  # is read with a read-only deploy key; forks cannot see it, so their pull
+  # requests skip this job and rely on the maintainers' run.
+  upstream-spec:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: HapMarket/lottery-spec
+          ssh-key: ${{ secrets.SPEC_DEPLOY_KEY }}
+          path: upstream-spec
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+      - run: node scripts/spec-public.ts check --source upstream-spec
+
+  # The real thing, against the live chain, with the command the README gives.
+  # The endpoint is a third-party provider, never ours. FULL_HISTORY_RPC, when
+  # set, is one that serves full log history (its URL carries an API key, so it
+  # is a secret; the tool prints only the host). Without it the job falls back
+  # to a public endpoint that prunes old logs: older rounds then come back
+  # INCOMPLETE and their jobs fail, which is reported, not hidden.
+  live:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: current core v3, round 1
+            args: --round 1
+            expect: '0'
+          - name: superseded core 0xa0ca, round 1
+            args: --round 1 --core 0xa0ca23bfb669acad267a1acaf142cd4b3415e759 --from-block 139115294
+            expect: '0'
+          - name: superseded core 0xd646, round 1 (awaiting forfeit and redraw)
+            args: --round 1 --core 0xd64634cc802c71be86fdc98bcaebf55831335bd3 --from-block 138534275
+            expect: '0 4'
+          - name: superseded core 0xd646, round 2
+            args: --round 2 --core 0xd64634cc802c71be86fdc98bcaebf55831335bd3 --from-block 138534275
+            expect: '0'
+          # Two fulfilments accepted for one nonce: the verifier must say FAIL.
+          - name: retry-test core 0xfe94, round 1 (must fail)
+            args: --round 1 --core 0xfe9439c8a65b4bbe1f6cdacc055bf7546762d12b --from-block 138545778
+            expect: '1'
+    name: live — ${{ matrix.name }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+      # No npm ci: the README promises the tool runs with nothing installed.
+      - name: verify
+        env:
+          RPC: ${{ secrets.FULL_HISTORY_RPC || 'https://bsc-testnet-rpc.publicnode.com' }}
+          EXPECT: ${{ matrix.expect }}
+        run: |
+          set +e
+          node src/cli.ts --rpc "$RPC" ${{ matrix.args }}
+          code=$?
+          set -e
+          for ok in $EXPECT; do [ "$code" = "$ok" ] && exit 0; done
+          echo "::error::exit status $code, expected one of: $EXPECT"
+          exit 1
