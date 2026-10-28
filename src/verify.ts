@@ -1,6 +1,6 @@
 import { coordinatorFor } from './chainlink.ts';
 import { computeCommitment, type Purchase } from './commitment.ts';
-import { deriveIndex, isExcluded, type Range } from './derivation.ts';
+import { deriveIndex, isExcluded, MAX_ATTEMPTS, type Derivation, type Range } from './derivation.ts';
 import { hashDescriptor } from './descriptor.ts';
 import { chainOrder, eventTopics, fetchLogs, orderPurchases, purchaseFromLog, type EventName, type Log } from './events.ts';
 import { bytesToHex, hex32, hexAddress, hexToBytes, toWord } from './hex.ts';
@@ -56,9 +56,21 @@ export interface VerifyInput {
 
 const MAX_NONCES = 3n; // the original draw and at most two redraws (PUBLIC-SPEC §4, §6)
 
+// roundOf()'s status word, and RoundRefunding's `from` (PUBLIC-SPEC §10).
+const STATUS_NAMES = ['NONE', 'OPEN', 'CLOSING', 'DRAWING', 'DRAWN', 'REFUNDING', 'FULFILLING', 'SETTLED'] as const;
+const OPEN = 1n;
+const CLOSING = 2n;
+const DRAWING = 3n;
+const DRAWN = 4n;
+const REFUNDING = 5n;
+const statusName = (s: bigint): string => (s < BigInt(STATUS_NAMES.length) ? (STATUS_NAMES[Number(s)] as string) : `unknown status ${s}`);
+
+// Logs that only a draw in progress emits; none may follow a refund.
+const DRAW_EVENTS: readonly EventName[] = ['RandomnessRequested', 'RandomnessFulfilled', 'WinnerSelected'];
+
 const CORE_EVENTS: readonly EventName[] = [
   'RoundOpened', 'TicketsPurchased', 'EntryCommitted', 'RandomnessRequested',
-  'RandomnessFulfilled', 'WinnerSelected', 'DrawForfeited', 'RoundCancelled',
+  'RandomnessFulfilled', 'WinnerSelected', 'DrawForfeited', 'RoundCancelled', 'RoundRefunding',
 ];
 
 export async function verifyRound(input: VerifyInput): Promise<RoundReport> {
@@ -100,6 +112,34 @@ export async function verifyRound(input: VerifyInput): Promise<RoundReport> {
   push({ id: 'round.exists', title: 'Round exists on this core', status: 'pass', actual: `opened in block ${(opened[0] as Log).blockNumber}` });
   if (input.descriptor !== undefined) checkDescriptor(keccak, input.descriptor, descriptorHash, push);
 
+  // --- Refund (PUBLIC-SPEC §4 "Refunds") ----------------------------------
+  // A refund voids the round, so it needs a reason as much as a winner does:
+  // refunding a draw whose outcome was already readable is a veto. Whether the
+  // reason holds is judged once the rest of the round is known (refund.justified
+  // below); here, that there is at most one, and that state agrees.
+  const refunds = of('RoundRefunding');
+  if (refunds.length > 1) {
+    push({ id: 'refund.once', title: 'Refunded at most once', status: 'fail', actual: `${refunds.length} RoundRefunding logs` });
+    return report;
+  }
+  const refund = refunds[0];
+  push({ id: 'state.refunding', title: 'Refunding: RoundRefunding log vs roundOf() status now',
+    status: (status === REFUNDING) === (refund !== undefined) ? 'pass' : refund === undefined ? 'incomplete' : 'fail',
+    expected: refund === undefined ? 'not REFUNDING' : 'REFUNDING', actual: statusName(status),
+    ...(refund === undefined && status === REFUNDING ? { note: 'the core reports a refund, but the endpoint returned no RoundRefunding log' } : {}) });
+  const judgeRefund = (r: Log, ok: boolean, reason: string): void => {
+    push({ id: 'refund.justified', title: 'Refund has a reason the chain shows', status: ok ? 'pass' : 'fail',
+      actual: `refunded from ${statusName(r.words[0] as bigint)} in block ${r.blockNumber}`, note: reason });
+  };
+  // Before any request there is no outcome to void, so only a refund from
+  // OPEN or CLOSING is honest; the core cannot be in a later status yet.
+  const judgeRefundBeforeDraw = (r: Log): void => {
+    const from = r.words[0] as bigint;
+    judgeRefund(r, from === OPEN || from === CLOSING, from === OPEN || from === CLOSING
+      ? 'no randomness was ever requested, so there was no outcome to void'
+      : `no randomness was ever requested, so the round cannot have been ${statusName(from)}`);
+  };
+
   // --- Coordinator: Chainlink's, per Chainlink's own documentation -------
   const known = coordinatorFor(chainId);
   const [coordinatorWord] = await call('vrfCoordinator()', [], 1);
@@ -115,6 +155,10 @@ export async function verifyRound(input: VerifyInput): Promise<RoundReport> {
   // --- Commitment (PUBLIC-SPEC §3, §8 steps 1–5) ---------------------------
   const committed = of('EntryCommitted');
   if (committed.length === 0) {
+    if (refund !== undefined && stateCommitBlock === 0n) {
+      judgeRefundBeforeDraw(refund);
+      return report;
+    }
     push(stateCommitBlock === 0n
       ? { id: 'commit.exists', title: 'Entries committed', status: 'pending', note: 'the round has not closed yet' }
       : { id: 'commit.exists', title: 'Entries committed', status: 'incomplete',
@@ -165,9 +209,12 @@ export async function verifyRound(input: VerifyInput): Promise<RoundReport> {
     const afterRequest = requests.length > 0 && cancelled.some((c) => chainOrder(c, (requests[0] as { log: Log }).log) > 0);
     push({ id: 'round.noCancelAfterRequest', title: 'Not cancelled after randomness was requested', status: afterRequest ? 'fail' : 'pass',
       actual: `cancelled in block ${(cancelled[0] as Log).blockNumber}` });
-    if (!afterRequest) return report;
   }
   if (requests.length === 0) {
+    if (refund !== undefined) {
+      judgeRefundBeforeDraw(refund);
+      return report;
+    }
     push({ id: 'draw.requested', title: 'Randomness requested', status: 'pending', note: 'committed, but no request yet' });
     return report;
   }
@@ -198,7 +245,18 @@ export async function verifyRound(input: VerifyInput): Promise<RoundReport> {
   const winners = of('WinnerSelected');
   const forfeits = of('DrawForfeited');
   const winnerOf = new Map<bigint, Log>();
+  const derivedOf = new Map<bigint, Derivation>();
+  const accepted = (n: bigint): typeof requests => requests.filter((r) => r.nonce === n && fulfilmentByRequest.get(r.requestId)?.words[3] === 1n);
   for (let n = 1n; n <= maxNonce; n++) {
+    // Two accepted fulfilments for one nonce mean two outcomes were live at
+    // once, and whoever ordered them (in practice the fulfilling node, which
+    // batches them into one transaction) chose the seed (§4 "No re-rolls").
+    const ofNonce = requests.filter((r) => r.nonce === n);
+    const live = accepted(n);
+    push({ id: 'vrf.oneSuccess', title: "At most one of the nonce's requests fulfilled successfully", nonce: n,
+      status: live.length <= 1 ? 'pass' : 'fail', actual: `${live.length} of ${ofNonce.length} request(s)`,
+      ...(live.length > 1 ? { note: `requests ${live.map((r) => r.requestId).join(', ')} were all fulfilled: whoever ordered them chose between ${live.length} known outcomes` } : {}) });
+
     const wins = winners.filter((w) => w.words[0] === n);
     const fulfilled = of('RandomnessFulfilled').filter((f) => f.words[0] === n);
     if (fulfilled.length > 1) {
@@ -207,6 +265,7 @@ export async function verifyRound(input: VerifyInput): Promise<RoundReport> {
     }
     const fulfilment = fulfilled[0];
     if (fulfilment === undefined) {
+      if (refund !== undefined && wins.length === 0) continue; // refund.justified decides this nonce
       push({ id: 'seed.delivered', title: 'Seed delivered', nonce: n, status: wins.length > 0 ? 'fail' : 'pending',
         note: wins.length > 0 ? 'a winner was announced with no seed' : 'requested, not yet fulfilled' });
       continue;
@@ -244,12 +303,14 @@ export async function verifyRound(input: VerifyInput): Promise<RoundReport> {
     }
 
     const derived = deriveIndex(keccak, seed, roundId, n, committedTotal, excluded);
+    derivedOf.set(n, derived);
     if (wins.length > 1) {
       push({ id: 'winner.once', title: 'One winner per nonce', nonce: n, status: 'fail', actual: `${wins.length} WinnerSelected logs` });
       continue;
     }
     const win = wins[0];
     if (win === undefined) {
+      if (refund !== undefined) continue; // refund.justified decides this nonce
       push({ id: 'winner.selected', title: 'Winner selected', nonce: n, status: 'pending',
         note: derived.outcome === 'index' ? `seed delivered; the index it yields is ${derived.index}` : 'seed delivered; no eligible index (the round becomes refundable)' });
       continue;
@@ -272,7 +333,49 @@ export async function verifyRound(input: VerifyInput): Promise<RoundReport> {
       [hexAddress(announcedWinner), announcedIndex, requestId, hex32(seed)].join(' '),
       [hexAddress(dWinner as bigint), dIndex, dRequestId, hex32(dSeed as bigint)].join(' '), { nonce: n });
   }
+
+  if (refund !== undefined) {
+    judgeRefund(refund, ...refundReason(refund.words[0] as bigint));
+    const after = logs.filter((l) => DRAW_EVENTS.includes(l.name) && chainOrder(l, refund) > 0);
+    push({ id: 'refund.final', title: 'No draw activity after the refund', status: after.length === 0 ? 'pass' : 'fail',
+      ...(after.length > 0 ? { actual: after.map((l) => `${l.name} in block ${l.blockNumber}`).join(', ') } : {}) });
+  }
   return report;
+
+  // The rule for each status a round can refund from, once randomness was
+  // requested (PUBLIC-SPEC §4 "Refunds").
+  function refundReason(from: bigint): [boolean, string] {
+    if (from === OPEN || from === CLOSING) return [false, 'randomness was requested for this round, so it was past CLOSING'];
+    if (from === DRAWING) {
+      const n = maxNonce;
+      if (winnerOf.has(n)) return [false, `nonce ${n} already has a winner`];
+      const derived = derivedOf.get(n);
+      // A stored seed: only a seed that yields no eligible index strands the draw.
+      if (derived !== undefined) {
+        return derived.outcome === 'revert'
+          ? [true, `nonce ${n}'s seed yields no eligible index (NoEligibleIndex after ${MAX_ATTEMPTS} attempts)`]
+          : [false, `nonce ${n}'s seed yields index ${derived.index}: the draw could have completed`];
+      }
+      // No stored seed: honest only if no request could ever deliver one. A
+      // fulfilment the coordinator accepted, with no seed stored, landed after
+      // the refund, and its outcome was readable from the pending transaction
+      // before that: the refund could have been a veto.
+      const live = accepted(n);
+      if (live.length === 0) return [true, `nonce ${n} holds no seed, and the coordinator accepted no fulfilment of its ${requests.filter((r) => r.nonce === n).length} request(s)`];
+      const late = fulfilmentByRequest.get((live[0] as { requestId: bigint }).requestId) as Log;
+      return [false, `the coordinator accepted a fulfilment of request ${(live[0] as { requestId: bigint }).requestId} in block ${late.blockNumber}, but no seed was stored: the round refunded while that outcome was on its way`];
+    }
+    if (from === DRAWN) {
+      const last = winnerOf.get(MAX_NONCES);
+      const forfeit = forfeits.find((f) => f.words[0] === MAX_NONCES);
+      if (maxNonce !== MAX_NONCES || last === undefined) return [false, `only the winner of the last nonce (${MAX_NONCES}) forfeiting refunds a drawn round; the round reached nonce ${maxNonce}`];
+      if (forfeit === undefined || forfeit.topics[1] !== last.topics[1] || chainOrder(forfeit, refund as Log) > 0) {
+        return [false, `no DrawForfeited for nonce ${MAX_NONCES} naming its winner ${hexAddress(last.topics[1] as bigint)} before the refund`];
+      }
+      return [true, `the winner of nonce ${MAX_NONCES}, ${hexAddress(last.topics[1] as bigint)}, forfeited, and every redraw is used`];
+    }
+    return [false, `no round refunds from ${statusName(from)}`];
+  }
 }
 
 // Returns a description of the first defect, or undefined if the ranges

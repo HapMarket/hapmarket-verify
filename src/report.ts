@@ -57,8 +57,8 @@ function formatCheck(c: Check): string[] {
 }
 
 const VERDICT: Record<Status, string> = {
-  pass: 'Every check passed: the draw reproduces from chain data alone.',
-  fail: 'At least one check failed: the draw as recorded on-chain does not reproduce. See the FAIL lines above.',
+  pass: 'Every check passed: the round, as recorded on-chain, reproduces from chain data alone.',
+  fail: 'At least one check failed: the round as recorded on-chain does not check out. See the FAIL lines above.',
   incomplete: 'The endpoint did not supply all the data needed, so nothing was proven either way. Retry with an endpoint that serves full log history.',
   pending: 'Every completed step checks out; the draw has not finished yet.',
   unverifiable: 'The prize descriptor is newer than this verifier. This is not a mismatch; use a newer version of the verifier.',

@@ -15,6 +15,7 @@ export const SIGNATURES = {
   WinnerSelected: 'WinnerSelected(uint256,uint256,uint256,address)',
   DrawForfeited: 'DrawForfeited(uint256,uint256,address)',
   RoundCancelled: 'RoundCancelled(uint256)',
+  RoundRefunding: 'RoundRefunding(uint256,uint8)',
   // Chainlink's VRFCoordinatorV2_5, not ours (PUBLIC-SPEC §4).
   RandomWordsFulfilled: 'RandomWordsFulfilled(uint256,uint256,uint256,uint96,bool,bool,bool)',
 } as const;
@@ -34,6 +35,7 @@ const SHAPES: Record<EventName, { topics: number; words: number; addressTopics?:
   WinnerSelected: { topics: 2, words: 2, addressTopics: [1] },
   DrawForfeited: { topics: 2, words: 1, addressTopics: [1] },
   RoundCancelled: { topics: 1, words: 0 },
+  RoundRefunding: { topics: 1, words: 1 },
   RandomWordsFulfilled: { topics: 2, words: 5 },
 };
 

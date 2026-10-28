@@ -100,7 +100,7 @@ A merkle tree may be published separately for convenient inclusion proofs. It is
 3. **Fulfil.** The coordinator returns the seed. The contract stores it, sets a one-way flag, and emits:
    `RandomnessFulfilled(roundId, drawNonce, requestId, seed)`
 
-   `requestId` identifies which request produced the seed. A draw nonce can carry more than one request when a request times out and is retried, and whichever is fulfilled first supplies the seed; a fulfilment arriving for a nonce that already holds a seed changes nothing.
+   `requestId` identifies which request produced the seed. A draw nonce can carry a second request when the first times out and is retried. The core retries only once Chainlink can no longer fulfil the earlier request, so at most one of a nonce's requests is ever live (see "No re-rolls" below). Whichever is fulfilled first supplies the seed; a fulfilment arriving for a nonce that already holds a seed changes nothing.
 
 4. **Derive.** A separate, permissionless call computes the winning index and emits:
    `WinnerSelected(roundId, drawNonce, winningIndex, winner)`
@@ -119,7 +119,10 @@ event RandomnessFulfilled(uint256 indexed roundId, uint256 drawNonce, uint256 in
 event WinnerSelected(uint256 indexed roundId, uint256 drawNonce, uint256 winningIndex, address indexed winner);
 event DrawForfeited(uint256 indexed roundId, uint256 drawNonce, address indexed winner);
 event RoundCancelled(uint256 indexed roundId);
+event RoundRefunding(uint256 indexed roundId, uint8 from);
 ```
+
+`RoundRefunding` is emitted once, when a round moves to refunding for any reason, including a cancel. `from` is the status the round left, numbered as in §10.
 
 `drawNonce` is **not** indexed. Filter these logs by `roundId`, then read the nonce from the data.
 
@@ -162,6 +165,24 @@ Neither check can be skipped. A fixed coordinator is worthless if nobody confirm
 ### No re-rolls
 
 **Randomness cannot be re-rolled.** Once a seed has been fulfilled for a draw nonce, retry is permanently impossible, enforced by a one-way flag set in the VRF callback before any other logic runs. If no seed was ever fulfilled — for example the VRF subscription ran out — anyone may retry the request against the same unchanged commitment.
+
+**A nonce never has two live requests.** A retry is allowed only after Chainlink can no longer fulfil the request it replaces. If two requests for one nonce were both fulfillable, whoever ordered their fulfilments would choose between two known outcomes. Chainlink's node batches fulfilments into one transaction in an order of its own, so that would be the node's choice, with no block builder involved. **A nonce for which the coordinator logged `success = true` for more than one request fails**, even though only the first supplied the seed.
+
+### Refunds
+
+A round that cannot complete moves to refunding, and every buyer can withdraw what they paid. A refund is also a way to void a draw, so a verifier checks that each one had a reason the chain can show. `RoundRefunding`'s `from` names the status the round left:
+
+| `from` | When it is honest |
+|---|---|
+| `OPEN` (1) or `CLOSING` (2) | No randomness was ever requested for the round. This covers a deadline missed below the minimum, an abandoned round and a cancel. |
+| `DRAWING` (3) | The current nonce's draw is stranded, in one of two ways. **Either** the nonce holds a seed and deriving the index from it reverts `NoEligibleIndex` (§5), **or** the nonce holds no seed and the coordinator never logged `success = true` for any of the nonce's requests, before or after the refund. |
+| `DRAWN` (4) | The last permitted nonce (3) has a winner, and `DrawForfeited` for that nonce names that winner, so every redraw is used up (§6). |
+
+Any other refund fails.
+
+The `DRAWING` rule is the one that matters. A draw without a seed may refund only when no request can still deliver one. If the coordinator accepted a fulfilment for a nonce and no seed was stored, the round was already refunding when the fulfilment landed. Whoever refunded it could have read the outcome from the pending fulfilment first and refunded to void it. That is the veto §8 forbids for a cancel, reached through the refund path instead. The core makes it impossible by stranding a draw only after Chainlink can no longer fulfil any of its requests. The verifier checks rather than trusts that.
+
+A refund ends the round. No draw log for it (`RandomnessRequested`, `RandomnessFulfilled`, `WinnerSelected`) may come after `RoundRefunding`, and nonces drawn before the refund are still verified like any other.
 
 ---
 
@@ -253,6 +274,8 @@ Each of these structural checks catches a defect the steps above would miss:
 - **Nonces are complete.** They run 1, 2, … with no gap and no more than three (§4, §6).
 - **Logs agree with current state.** At the latest block, `roundOf(roundId)` reports the same commitment, total tickets, commit block and current nonce as the logs. `drawOf(roundId, n)` reports the same request, seed, winner and winning index for every nonce `n` with a `WinnerSelected` log. An endpoint that has pruned old logs fails this check. A missing log is reported as an incomplete endpoint, never as a different result. State at the latest block is served even by endpoints that prune history, so this check needs nothing more than the logs do.
 - **No cancellation after randomness was requested.** A round with a `RoundCancelled` log after any `RandomnessRequested` log fails. The seed becomes public when it is fulfilled, and the VRF proof is visible in the mempool before that, so cancelling after a request would let the operator veto a draw it had seen. The core refuses such a cancel; the verifier checks rather than trusts it.
+- **Every refund has a reason the chain shows.** A round with a `RoundRefunding` log meets the rule for its `from` status (§4, "Refunds"), and no draw log for the round comes after it.
+- **At most one successful fulfilment per nonce.** Among the coordinator's `RandomWordsFulfilled` logs for a nonce's requests, at most one carries `success = true` (§4, "No re-rolls").
 - **The commitment is unique and final.** `EntryCommitted` is emitted exactly once for the round. Every `TicketsPurchased` log for the round comes before it in chain order (block number, then log index).
 
 ### Deriving the excluded set without trusting anyone
@@ -355,7 +378,7 @@ The VRF coordinator is deliberately **not** in this table. A verifier takes it f
 
 Everything below comes from logs, plus view calls at the latest block. Many public RPC endpoints prune historical state, so a verifier that depended on reading state at a past block could not run against them.
 
-- **Commitment, total tickets, commit block:** `EntryCommitted`. The contract updates the running commitment only while the round is open, and freezing the round closes it. So there is one commitment per round, used unchanged by every nonce. §8 step 5 confirms the commitment is unique and final (see the structural checks), and that `roundOf(roundId)` at the latest block still reports the same `entryCommitment`. `roundOf` returns the static tuple `(uint8, uint8, uint64, uint64, bytes32)`, so the words are status, current nonce, commit block, total tickets and commitment, in that order.
+- **Commitment, total tickets, commit block:** `EntryCommitted`. The contract updates the running commitment only while the round is open, and freezing the round closes it. So there is one commitment per round, used unchanged by every nonce. §8 step 5 confirms the commitment is unique and final (see the structural checks), and that `roundOf(roundId)` at the latest block still reports the same `entryCommitment`. `roundOf` returns the static tuple `(uint8, uint8, uint64, uint64, bytes32)`, so the words are status, current nonce, commit block, total tickets and commitment, in that order. The status is numbered `NONE` 0 (no such round), `OPEN` 1, `CLOSING` 2, `DRAWING` 3, `DRAWN` 4, `REFUNDING` 5, `FULFILLING` 6 and `SETTLED` 7. It reads `REFUNDING` exactly when the round has a `RoundRefunding` log.
 - **One draw's state:** `drawOf(uint256 roundId, uint256 drawNonce)` returns the static tuple `(bool, uint8, uint64, uint64, uint64, address, uint64, uint256, bytes32)`. The words that matter here are the sixth (winner), seventh (winning index), eighth (the `requestId` whose fulfilment supplied the seed) and ninth (seed). §8's "Logs agree with current state" check compares these with the logs.
 - **Request, seed and winner for each nonce:** `RandomnessRequested`, `RandomnessFulfilled` and `WinnerSelected`, matched on `roundId` and the `drawNonce` in their data.
 - **The round's `prizeDescriptorHash` (§9):** from `RoundOpened`, emitted once when the round opens. Its topic signature is `RoundOpened(uint256,uint256,(uint8,bytes32,uint64,uint64,uint32,uint8,uint64,uint32,uint64,uint32,uint16))`. `roundId` and `marketId` are indexed, and the tuple is static, so the data is eleven 32-byte words and `prizeDescriptorHash` is the second. The round keeps its own copy from opening, so the hash cannot drift with the market's later terms.
