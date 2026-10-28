@@ -9,8 +9,8 @@ It doesn't talk to any HapMarket server, website, API or IPFS gateway. If every 
 You need [Node.js](https://nodejs.org) 24 or later and git. There is nothing to install: the tool has no runtime dependencies.
 
 ```sh
-git clone https://github.com/HapMarket/lottery-verify.git
-cd lottery-verify
+git clone https://github.com/HapMarket/hapmarket-verify.git
+cd hapmarket-verify
 node src/cli.ts --rpc https://bsc-testnet-rpc.publicnode.com --round 1
 ```
 
