@@ -249,6 +249,42 @@ For every draw, including every redraw:
 
 **Not every public endpoint does.** Many free endpoints keep logs for only a day or two, refuse `eth_getLogs` over older ranges, or return an **empty list, with no error,** for blocks they have pruned. To a careless verifier, that empty answer looks exactly like a round with no entries. Use an endpoint that serves full history; any third-party provider will do, since none of them is the operator. A verifier must also detect a pruned endpoint rather than trust it (§8, "Logs agree with current state").
 
+### The entry list file format
+
+The published entry list and the one a verifier writes must be **byte-identical**, so that comparing two of them is a hash check rather than a field-by-field diff. Both the JSON and the CSV form are fixed below. A file rebuilt from chain events has the same `sha256` as the published one, or the round does not verify.
+
+**One file covers the whole round, not one per draw nonce.** The entry set is frozen at close and never edited, and the commitment is byte-identical across every nonce (§8, step 5). A redraw changes only the excluded set, which is derived separately (§8) and is not part of this file.
+
+**Casing and encoding.** Addresses and transaction hashes are `0x`-prefixed, lowercase, fixed width — a 20-byte address is 42 characters, a 32-byte hash 66. **Every integer is a JSON decimal string**, not a JSON number: `startIndex` and `endIndex` are `uint256` and would lose precision as IEEE-754 doubles above 2⁵³ (§9, constraint 2), and encoding every integer the same way removes the question of which fields are safe. The CSV form carries the same integers as bare decimal tokens.
+
+**Row fields.** Rows are in the entry ordering of §2 — block number ascending, then log index within a block — which is the order the commitment folds them in. Each row carries exactly:
+
+| Field | Meaning |
+|---|---|
+| `buyer` | The purchasing address, from the `TicketsPurchased` topic |
+| `startIndex` | First ticket index in the purchase, inclusive |
+| `endIndex` | Last ticket index in the purchase, inclusive |
+| `blockNumber` | Block the `TicketsPurchased` log was emitted in |
+| `logIndex` | Index of that log within its block |
+| `transactionHash` | Transaction that emitted the log |
+
+`ticketCount` is **not** a field. It is `endIndex - startIndex + 1` (§2), and a stored copy could disagree with the indices it is derived from; the indices are the single source. `startIndex` and `endIndex` are the only two values a verifier needs from a row — the other four let a reader locate the log on-chain without changing what is hashed.
+
+**Envelope**, so a file identifies the round it belongs to. The JSON form is an object with these scalar fields beside an `entries` array; the CSV form is the rows only, and its envelope is the JSON file it accompanies. The envelope values are reproduced verbatim from the deployment table (§10) and the round's `EntryCommitted` log (§4); this file does not recompute them.
+
+| Field | Meaning |
+|---|---|
+| `chainId` | EIP-155 chain ID of the deployment |
+| `coreAddress` | The core contract the round belongs to (§10) |
+| `roundId` | The round |
+| `entryCommitment` | The on-chain commitment (§3), which every row reproduces |
+| `totalTickets` | Total tickets in the round |
+| `commitBlock` | Block the `EntryCommitted` log was emitted in |
+
+**JSON byte determinism.** The JSON form is **RFC 8785 (JCS) canonical**, by the same rules §9 already publishes for the prize descriptor: object keys sorted by code point, no insignificant whitespace, minimal string escaping. Array order is semantic and JCS preserves it, so the `entries` array stays in the §2 ordering while every object's keys are sorted. Because every value is a string, JCS number formatting is never exercised here.
+
+**CSV byte determinism.** The header is the line `buyer,startIndex,endIndex,blockNumber,logIndex,transactionHash`. Columns follow that order, the delimiter is a comma, every line including the last ends with a single `\n` (U+000A), and there is no other whitespace. No value contains a comma, quote or newline, so no quoting rule is needed.
+
 ---
 
 ## 8. How to verify a draw yourself
@@ -295,6 +331,16 @@ This works because a **new draw nonce can only mean a forfeit.** A VRF retry re-
 A reference implementation is published at `hapmarket-verify`. It is written independently of the contract, reads only from an RPC endpoint you choose, and depends on no operator infrastructure. Its results can be reproduced on a clean machine with a single command.
 
 Test vectors for the commitment, the derivation function, the seed, the canonicalizer, and the canonical prize descriptor hash are published alongside it. Both the contract and the reference implementation are checked against those vectors, which were written before either implementation existed.
+
+### What a verification surface must show
+
+A verification surface is anything that presents a draw's verification to a reader: the reference CLI, a web verify page, or any other tool. Beyond performing the checks above, a conforming surface must present them so that a reader can follow and independently re-run each one.
+
+- **Show the four steps of §4 in order, for every draw nonce of the round** — not only the final one. A round with redraws has the steps repeated per nonce. A nonce whose request was retried (§4) shows **both** requests under step 2.
+- **For each step, show the block number, the block timestamp, and the full transaction hash as text.** The hash is shown in full so the reader can look it up on any explorer or any RPC endpoint. An explorer link is a convenience placed next to the hash, never a replacement for it: a link alone ties the reader to one explorer's copy.
+- **Block timestamps and transaction hashes are references the endpoint reports, not values the surface checked.** A surface must not present them as verified — no tick, badge or wording that implies a timestamp or a hash was independently confirmed. What the surface verifies are the computations below; a reference locates a fact on-chain, it does not attest to it.
+- **The surface performs the computations of §8 and shows each as pass or fail:** the commitment recomputation (steps 1–3), the commit-before-request ordering (step 4) and the commitment's identity across nonces (step 5), the coordinator and seed-origin checks (steps 6–7), the excluded-set derivation and index recomputation (steps 8–9), and the structural checks. These are what a tick may stand beside, because each is a value the surface recomputed.
+- **The RPC endpoint is the reader's choice and must be editable.** Every value shown as verified is read from that endpoint, never from an API the operator runs. A surface that displays an operator-supplied value as if verified is showing theatre, however correct the value happens to be.
 
 ---
 
