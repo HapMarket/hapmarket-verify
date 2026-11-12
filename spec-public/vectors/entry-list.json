@@ -1,0 +1,79 @@
+{
+  "vectorFormat": 1,
+  "subject": "entry-list",
+  "status": "pendingSecondPass",
+  "$comment": "Entry-list serialization fixture for PUBLIC-SPEC.md section 7, 'The entry list file format'. Each case gives an envelope plus an ordered set of purchase rows, and asserts the exact canonical JSON text and the exact CSV text the format produces. METHOD: JSON is RFC 8785 (JCS) canonical - object keys sorted by code point, no insignificant whitespace, minimal escaping; every value is a string, so JCS number formatting is never exercised. The 'entries' array is NOT sorted by JCS: array order is semantic and is the section 2 entry ordering (blockNumber ascending, then logIndex within a block). CSV is header 'buyer,startIndex,endIndex,blockNumber,logIndex,transactionHash', comma-delimited, every line including the last ended by a single '\\n' (U+000A). Envelope scalars (entryCommitment, totalTickets, ...) are given inputs carried through verbatim; this file does not recompute the commitment - that is commitment.json's subject. In case 'twoBlocksSharedBlock' the input 'entries' are given OUT of order on purpose, so the expected output pins the ordering rule, not just the key sort. An input key prefixed with '_' is an annotation an implementation must ignore (vectors/FORMAT.md). PROVENANCE: Pass A, 2026-11-13: Claude (an AI), canonical bytes derived by hand from the section 7 prose, no JCS or CSV serializer run; the key sort and row order were worked out on paper and the hex widths checked (address 42 chars, 32-byte hash 66 chars). Pass B: PENDING - a second person must re-derive the canonical JSON and CSV bytes from the prose alone, without seeing this file or Pass A's method, and the two must reconcile before this file is marked 'complete'. Format: vectors/FORMAT.md.",
+  "cases": [
+    {
+      "name": "twoBlocksSharedBlock",
+      "description": "Three purchases, two sharing block 100 with different logIndex, the same buyer appearing twice non-contiguously. Input entries are deliberately out of chain order, so the expected output pins both the JCS key sort and the blockNumber-then-logIndex row ordering. Fails an implementation that preserves input array order, that sorts object keys wrongly, or that emits integers as JSON numbers.",
+      "input": {
+        "chainId": "97",
+        "coreAddress": "0x1111111111111111111111111111111111111111",
+        "roundId": "1",
+        "entryCommitment": "0xabababababababababababababababababababababababababababababababab",
+        "totalTickets": "9",
+        "commitBlock": "103",
+        "_note": "entries below are intentionally not in chain order; the expected output is ordered by blockNumber, then logIndex",
+        "entries": [
+          {
+            "buyer": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "startIndex": "4",
+            "endIndex": "8",
+            "blockNumber": "102",
+            "logIndex": "2",
+            "transactionHash": "0x3333333333333333333333333333333333333333333333333333333333333333"
+          },
+          {
+            "buyer": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "startIndex": "3",
+            "endIndex": "3",
+            "blockNumber": "100",
+            "logIndex": "5",
+            "transactionHash": "0x2222222222222222222222222222222222222222222222222222222222222222"
+          },
+          {
+            "buyer": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "startIndex": "0",
+            "endIndex": "2",
+            "blockNumber": "100",
+            "logIndex": "0",
+            "transactionHash": "0x1111111111111111111111111111111111111111111111111111111111111111"
+          }
+        ]
+      },
+      "expect": {
+        "outcome": "entryList",
+        "json": "{\"chainId\":\"97\",\"commitBlock\":\"103\",\"coreAddress\":\"0x1111111111111111111111111111111111111111\",\"entries\":[{\"blockNumber\":\"100\",\"buyer\":\"0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"endIndex\":\"2\",\"logIndex\":\"0\",\"startIndex\":\"0\",\"transactionHash\":\"0x1111111111111111111111111111111111111111111111111111111111111111\"},{\"blockNumber\":\"100\",\"buyer\":\"0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"endIndex\":\"3\",\"logIndex\":\"5\",\"startIndex\":\"3\",\"transactionHash\":\"0x2222222222222222222222222222222222222222222222222222222222222222\"},{\"blockNumber\":\"102\",\"buyer\":\"0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"endIndex\":\"8\",\"logIndex\":\"2\",\"startIndex\":\"4\",\"transactionHash\":\"0x3333333333333333333333333333333333333333333333333333333333333333\"}],\"entryCommitment\":\"0xabababababababababababababababababababababababababababababababab\",\"roundId\":\"1\",\"totalTickets\":\"9\"}",
+        "csv": "buyer,startIndex,endIndex,blockNumber,logIndex,transactionHash\n0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa,0,2,100,0,0x1111111111111111111111111111111111111111111111111111111111111111\n0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb,3,3,100,5,0x2222222222222222222222222222222222222222222222222222222222222222\n0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa,4,8,102,2,0x3333333333333333333333333333333333333333333333333333333333333333\n"
+      }
+    },
+    {
+      "name": "singleEntry",
+      "description": "A one-purchase round. Pins the simplest shape: a single-element entries array, and a CSV of header plus one data line, each ended by a trailing newline. Fails an implementation that omits the final newline, or that drops the header on a one-row file.",
+      "input": {
+        "chainId": "97",
+        "coreAddress": "0x1111111111111111111111111111111111111111",
+        "roundId": "2",
+        "entryCommitment": "0xcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+        "totalTickets": "5",
+        "commitBlock": "200",
+        "entries": [
+          {
+            "buyer": "0xcccccccccccccccccccccccccccccccccccccccc",
+            "startIndex": "0",
+            "endIndex": "4",
+            "blockNumber": "150",
+            "logIndex": "0",
+            "transactionHash": "0x4444444444444444444444444444444444444444444444444444444444444444"
+          }
+        ]
+      },
+      "expect": {
+        "outcome": "entryList",
+        "json": "{\"chainId\":\"97\",\"commitBlock\":\"200\",\"coreAddress\":\"0x1111111111111111111111111111111111111111\",\"entries\":[{\"blockNumber\":\"150\",\"buyer\":\"0xcccccccccccccccccccccccccccccccccccccccc\",\"endIndex\":\"4\",\"logIndex\":\"0\",\"startIndex\":\"0\",\"transactionHash\":\"0x4444444444444444444444444444444444444444444444444444444444444444\"}],\"entryCommitment\":\"0xcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd\",\"roundId\":\"2\",\"totalTickets\":\"5\"}",
+        "csv": "buyer,startIndex,endIndex,blockNumber,logIndex,transactionHash\n0xcccccccccccccccccccccccccccccccccccccccc,0,4,150,0,0x4444444444444444444444444444444444444444444444444444444444444444\n"
+      }
+    }
+  ]
+}

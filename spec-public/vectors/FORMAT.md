@@ -2,7 +2,7 @@
 
 **Published** (vendored into `hapmarket-verify`).
 
-One envelope for every file in `vectors/`: `commitment.json`, `derivation.json`, `descriptor-hash.json`, `canonicalization.json`, and `seed.json`. Both implementations read these files unchanged; each implementation's conformance job is the same fixture read twice.
+One envelope for every file in `vectors/`: `commitment.json`, `derivation.json`, `descriptor-hash.json`, `canonicalization.json`, `seed.json`, and `entry-list.json`. Both implementations read these files unchanged; each implementation's conformance job is the same fixture read twice.
 
 ---
 
@@ -19,7 +19,7 @@ One envelope for every file in `vectors/`: `commitment.json`, `derivation.json`,
 }
 ```
 
-`subject` is one of `commitment`, `derivation`, `descriptor-hash`, `canonicalization`, `seed`.
+`subject` is one of `commitment`, `derivation`, `descriptor-hash`, `canonicalization`, `seed`, `entry-list`.
 
 `status` tracks the two-person process:
 
@@ -45,6 +45,7 @@ Every case carries exactly one `expect.outcome`:
 | `revert` | derivation | `error`: the custom error name |
 | `canonical` | canonicalization | `value`: the exact canonical JSON text, as a string |
 | `seed` | seed | `value`: `0x`-prefixed 32-byte hex, the seed derived from `input.outputSeed` |
+| `entryList` | entry-list | `json`: the exact canonical JSON text; `csv`: the exact CSV text; both as strings, with `\n` for line ends |
 
 Several outcomes carry a **second assertion** alongside `value`. Each localises a failure that would otherwise be one opaque mismatch.
 
@@ -120,6 +121,6 @@ Two consequences. A harness that rejects unknown input keys must skip `_`-prefix
 
 Negative cases — `reject`, `unverifiable`, `revert` — assert **where** an input fails. They carry no computed value, so they can be written directly from the spec prose.
 
-Positive cases — `commitment`, `index`, `hash`, `canonical`, `seed` — carry a value that must be computed, and each value is produced by **two independent passes**: each works from the published prose alone, without seeing the other's method or any implementation, and the two are compared. A mismatch is treated as evidence that the prose is ambiguous. Any scratch script used is deleted, so it never becomes a third implementation. **Do not fill a positive case from an implementation.**
+Positive cases — `commitment`, `index`, `hash`, `canonical`, `seed`, `entryList` — carry a value that must be computed, and each value is produced by **two independent passes**: each works from the published prose alone, without seeing the other's method or any implementation, and the two are compared. For `entryList` the computed value is the serialization itself — the exact canonical JSON and CSV bytes the format in `PUBLIC-SPEC.md` §7 produces from the given rows — so a pass derives those bytes by hand from the prose, never by running a JCS or CSV writer. The envelope scalars (`entryCommitment`, `totalTickets`, and so on) are given inputs carried through verbatim, not recomputed here; the commitment's own correctness is `commitment.json`'s subject. A mismatch is treated as evidence that the prose is ambiguous. Any scratch script used is deleted, so it never becomes a third implementation. **Do not fill a positive case from an implementation.**
 
 Each file's top-level `$comment` records who made each pass, with what tools, and any limit on how independent the passes were.
