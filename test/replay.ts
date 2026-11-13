@@ -54,6 +54,15 @@ export function replayRpc(recording: Recording): Rpc {
         if (hit === undefined) throw new Error(`replay: eth_call not in recording: ${JSON.stringify(params)}`);
         return hit.result;
       }
+      // Block timestamps are references (PUBLIC-SPEC §8): answered from a
+      // recorded exchange when the recording carries one, otherwise treated as
+      // not in the recording, which the verifier turns into an absent
+      // timestamp rather than a failure.
+      if (method === 'eth_getBlockByNumber') {
+        const hit = recording.exchanges.find((e) => e.method === 'eth_getBlockByNumber' && JSON.stringify(e.params) === JSON.stringify(params));
+        if (hit === undefined) throw new Error(`replay: eth_getBlockByNumber not in recording: ${JSON.stringify(params)}`);
+        return hit.result;
+      }
       if (method === 'eth_getLogs') {
         const f = params[0] as LogFilter;
         const from = BigInt(f.fromBlock);

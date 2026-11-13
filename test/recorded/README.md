@@ -17,6 +17,8 @@ a query the endpoint never answered fails instead of returning nothing. The
 | `97-d64634cc.json` | `0xd64634cc…5bd3` (superseded) | 2026-10-28, NodeReal | Rounds 1 and 2 running side by side. Round 1 is drawn and awaiting the Part C forfeit and redraw (claim window closes 2026-11-22 22:49:37 UTC). Re-record after the redraw. |
 | `97-fe9439c8.json` | `0xfe9439c8…d12b` (retry test) | 2026-10-28, NodeReal | Round 1: two requests at nonce 1, both fulfilled in one transaction with `success = true`. The fulfilling node chose which seed counted, so the round **fails** `vrf.oneSuccess`, and is kept as the case that proves the check works. This core predates the contract fix that allows only one live request per nonce. |
 
+**Block timestamps.** Step evidence (PUBLIC-SPEC §8) shows each step's block timestamp, read with `eth_getBlockByNumber`. These recordings predate that and carry no such exchanges, so on replay the timestamps come back **absent** — which is correct behaviour for an endpoint that will not serve a block, and changes no check (timestamps are references, not checks). `replay.ts` answers `eth_getBlockByNumber` from a recorded exchange when one is present, so re-recording from a full-history endpoint (the `97-*` NodeReal captures need that provider's key; `97-1d1da09e` was publicnode, which has since pruned) will populate them. `test/step-evidence.test.ts` exercises the populated path directly. Transaction hashes are already present in every recorded log.
+
 The refund paths have no real draw yet; `recorded.test.ts` builds each one by rewriting the settled round's history.
 
 All on BNB Chain testnet (chain 97). Coordinator `0xDA3b641D438362C440Ac5458c57e00a712b66700`.

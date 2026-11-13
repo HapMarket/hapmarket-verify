@@ -1,0 +1,48 @@
+# Publishes @hapmarket/verify to npm when a version tag is pushed. The publish
+# carries npm provenance (publishConfig.provenance), which ties the tarball to
+# this commit in this public repo through the workflow's OIDC identity — so a
+# consumer can confirm the package was built from the source they can read,
+# not substituted. Actions are pinned to a commit, as in ci.yml.
+#
+# The same offline checks ci.yml runs gate the publish: a tag never ships code
+# that would fail CI. prepack (npm run build) emits dist/ into the tarball.
+#
+# Requires: a repository secret NPM_TOKEN (an npm automation token for the
+# @hapmarket scope). Provenance additionally needs the id-token permission below.
+
+name: release
+
+on:
+  push:
+    tags: ['v*.*.*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write # npm provenance
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          registry-url: 'https://registry.npmjs.org'
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run check:deps
+      - run: npm run check:spec
+      # The tag must match the version in package.json, so a tag can never ship
+      # a different version than it names.
+      - name: Tag matches package version
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          pkg="$(node -p "require('./package.json').version")"
+          [ "$tag" = "$pkg" ] || { echo "::error::tag $GITHUB_REF_NAME does not match package version $pkg"; exit 1; }
+      # prepack runs the build; --provenance is also set via publishConfig.
+      - run: npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

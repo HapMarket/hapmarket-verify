@@ -4,13 +4,16 @@ import type { Keccak256 } from './keccak.ts';
 
 // One TicketsPurchased log, reduced to what verification reads: the buyer and
 // range folded into the commitment, and the position that fixes their order
-// (PUBLIC-SPEC §2).
+// (PUBLIC-SPEC §2). `transactionHash` is not part of the commitment — only
+// buyer, startIndex and endIndex are (§3) — but it is one of the six fields the
+// published entry list carries per row (§7), so it travels with the purchase.
 export interface Purchase {
   buyer: bigint;
   startIndex: bigint;
   endIndex: bigint;
   blockNumber: bigint;
   logIndex: bigint;
+  transactionHash: bigint;
 }
 
 // Recomputes the running hash the contract maintains, from bytes32(0):

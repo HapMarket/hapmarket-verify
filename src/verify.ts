@@ -2,10 +2,11 @@ import { coordinatorFor } from './chainlink.ts';
 import { computeCommitment, type Purchase } from './commitment.ts';
 import { deriveIndex, isExcluded, MAX_ATTEMPTS, type Derivation, type Range } from './derivation.ts';
 import { hashDescriptor } from './descriptor.ts';
+import type { EntryEnvelope } from './entries.ts';
 import { chainOrder, eventTopics, fetchLogs, orderPurchases, purchaseFromLog, type EventName, type Log } from './events.ts';
 import { bytesToHex, hex32, hexAddress, hexToBytes, toWord } from './hex.ts';
 import type { Keccak256 } from './keccak.ts';
-import { parseQuantity, quantity, type Rpc } from './rpc.ts';
+import { EndpointError, parseQuantity, quantity, type Rpc } from './rpc.ts';
 import { seedFromOutputSeed } from './seed.ts';
 
 // Verifies one round, on one core, across every draw nonce, following
@@ -25,14 +26,66 @@ import { seedFromOutputSeed } from './seed.ts';
 // unverifiable a prize descriptor newer than this tool (PUBLIC-SPEC §9)
 export type Status = 'pass' | 'fail' | 'incomplete' | 'pending' | 'unverifiable';
 
+// Every check's stable identifier. These are public API: a consumer (the web
+// verify page) keys its English catalogue off them, so renaming one is a
+// BREAKING CHANGE. Add a new id rather than repurpose an existing one. The
+// human-readable `title` is for the CLI; a translating surface renders the id.
+export const CHECK_IDS = [
+  'round.exists', 'descriptor.hash', 'refund.once', 'state.refunding', 'refund.justified',
+  'vrf.coordinator', 'commit.exists', 'commit.once', 'commit.final', 'entries.complete',
+  'entries.tiling', 'commit.total', 'commit.value', 'commit.block', 'state.commitment',
+  'state.total', 'state.commitBlock', 'request.afterCommit', 'round.noCancelAfterRequest',
+  'draw.requested', 'nonce.complete', 'state.nonce', 'vrf.single', 'vrf.noFailedFulfilment',
+  'vrf.oneSuccess', 'seed.once', 'seed.delivered', 'seed.requestMatches', 'seed.fromChainlink',
+  'seed.sameTx', 'redraw.priorWinner', 'redraw.forfeitMatches', 'winner.once', 'winner.selected',
+  'winner.index', 'winner.notExcluded', 'winner.owner', 'state.draw', 'refund.final',
+] as const;
+export type CheckId = (typeof CHECK_IDS)[number];
+
+// Keys for the notes that carry interpolated data a surface may want
+// structured rather than parsed out of English. Kept deliberately small: most
+// notes are explanatory prose for the CLI, and the values a check compares live
+// in `expected`/`actual`, which are already language-free. Like CheckId, these
+// are public API — renaming one is breaking.
+export const NOTE_KEYS = ['roundMissing', 'noCoordinatorForChain', 'refundedFrom', 'descriptorUnverifiable'] as const;
+export type NoteKey = (typeof NOTE_KEYS)[number];
+
 export interface Check {
-  id: string;
+  id: CheckId;
   title: string;
   status: Status;
   nonce?: bigint;
   expected?: string;
   actual?: string;
+  // English, printed by the CLI. A translating surface uses `noteKey`/`noteArgs`
+  // where present and otherwise renders from the check `id`.
   note?: string;
+  noteKey?: NoteKey;
+  noteArgs?: Record<string, string>;
+}
+
+// One of the four protocol steps of §4, located on-chain for a reader. Block
+// timestamps and transaction hashes are REFERENCES the endpoint reports, not
+// values the verifier checked (§8): they produce no Check and never change a
+// verdict. `blockTimestamp` is absent when the endpoint could not serve the
+// block; the hash is always present, parsed as strictly as any logged field.
+export type StepName = 'freeze' | 'request' | 'fulfil' | 'derive';
+
+export interface StepRef {
+  blockNumber: bigint;
+  logIndex: bigint;
+  transactionHash: bigint;
+  blockTimestamp?: bigint;
+}
+
+export interface StepEvidence extends StepRef {
+  step: StepName;
+  // Freeze is round-level and carries no nonce; the other three are per nonce.
+  nonce?: bigint;
+  requestId?: bigint;
+  // For a fulfil step, the coordinator's RandomWordsFulfilled log — the one the
+  // seed check reads (§8 step 7). Absent if the coordinator logged none.
+  coordinator?: StepRef;
 }
 
 export interface RoundReport {
@@ -41,6 +94,14 @@ export interface RoundReport {
   roundId: bigint;
   block: bigint;
   checks: Check[];
+  // The four §4 steps for every nonce, as references (above). Never affects the
+  // verdict; a surface shows them so a reader can look each step up on-chain.
+  steps: StepEvidence[];
+  // The ordered entry list the verifier rebuilt from events (§2, §7), present
+  // even when a check failed — a failing list is exactly what a reader wants to
+  // download. `entryEnvelope` is set once the commitment is known.
+  entries: Purchase[];
+  entryEnvelope?: EntryEnvelope;
 }
 
 export interface VerifyInput {
@@ -52,6 +113,10 @@ export interface VerifyInput {
   // Optional prize descriptor text, checked against the hash the round
   // committed to when it opened.
   descriptor?: Uint8Array;
+  // Called with each check as it resolves, in the order checks are produced, so
+  // a page can fill rows as the run proceeds. It never changes the order or
+  // content of report.checks — the same object is both pushed and passed here.
+  onCheck?: (check: Check) => void;
 }
 
 const MAX_NONCES = 3n; // the original draw and at most two redraws (PUBLIC-SPEC §4, §6)
@@ -74,24 +139,45 @@ const CORE_EVENTS: readonly EventName[] = [
 ];
 
 export async function verifyRound(input: VerifyInput): Promise<RoundReport> {
+  const report: RoundReport = { chainId: 0n, core: input.core, roundId: input.roundId, block: 0n, checks: [], steps: [], entries: [] };
+  try {
+    await runChecks(input, report);
+  } finally {
+    // Timestamps are references, fetched once per distinct step block, after
+    // the checks so the verdict never waits on them and a failed fetch leaves
+    // the step without a timestamp rather than failing the run.
+    await fillStepTimestamps(input.rpc, report.steps);
+  }
+  return report;
+}
+
+async function runChecks(input: VerifyInput, report: RoundReport): Promise<void> {
   const { rpc, keccak, core, roundId } = input;
   const topics = eventTopics(keccak);
   const chainId = parseQuantity(await rpc.request('eth_chainId', []), 'eth_chainId');
   const block = parseQuantity(await rpc.request('eth_blockNumber', []), 'eth_blockNumber');
-  const report: RoundReport = { chainId, core, roundId, block, checks: [] };
+  report.chainId = chainId;
+  report.block = block;
   const checks = report.checks;
-  const push = (c: Check): void => void checks.push(c);
-  const compare = (id: string, title: string, expected: string, actual: string, extra: Partial<Check> = {}): boolean => {
+  const push = (c: Check): void => {
+    checks.push(c);
+    input.onCheck?.(c);
+  };
+  const compare = (id: CheckId, title: string, expected: string, actual: string, extra: Partial<Check> = {}): boolean => {
     push({ id, title, status: expected === actual ? 'pass' : 'fail', expected, actual, ...extra });
     return expected === actual;
   };
+  // A log reduced to the reference a reader looks up (§8). Step evidence is
+  // recorded as the logs are processed; timestamps are filled afterwards.
+  const ref = (l: Log): StepRef => ({ blockNumber: l.blockNumber, logIndex: l.logIndex, transactionHash: l.transactionHash });
+  const recordStep = (s: StepEvidence): void => void report.steps.push(s);
 
   const call = async (signature: string, args: readonly bigint[], words: number): Promise<bigint[]> => {
     const selector = bytesToHex(keccak(new TextEncoder().encode(signature)).subarray(0, 4));
     const data = selector + args.map((a) => bytesToHex(toWord(a)).slice(2)).join('');
     const result = await rpc.request('eth_call', [{ to: hexAddress(core), data }, quantity(block)]);
     const bytes = hexToBytes(String(result));
-    if (bytes.length !== 32 * words) throw new Error(`${signature} returned ${bytes.length} bytes, expected ${32 * words}`);
+    if (bytes.length !== 32 * words) throw new EndpointError('eth_call', `${signature} returned ${bytes.length} bytes, expected ${32 * words}`);
     return Array.from({ length: words }, (_, i) => BigInt(bytesToHex(bytes.subarray(32 * i, 32 * i + 32))));
   };
 
@@ -103,10 +189,11 @@ export async function verifyRound(input: VerifyInput): Promise<RoundReport> {
   const opened = of('RoundOpened');
   if (opened.length === 0) {
     push(status === 0n
-      ? { id: 'round.exists', title: 'Round exists on this core', status: 'fail', note: `no round ${roundId} on core ${hexAddress(core)}` }
+      ? { id: 'round.exists', title: 'Round exists on this core', status: 'fail', note: `no round ${roundId} on core ${hexAddress(core)}`,
+          noteKey: 'roundMissing', noteArgs: { roundId: roundId.toString(), core: hexAddress(core) } }
       : { id: 'round.exists', title: 'Round exists on this core', status: 'incomplete',
           note: 'the core reports this round, but the endpoint returned no RoundOpened log: it has likely pruned old logs. Use an endpoint that serves full log history.' });
-    return report;
+    return;
   }
   const descriptorHash = (opened[0] as Log).words[1] as bigint;
   push({ id: 'round.exists', title: 'Round exists on this core', status: 'pass', actual: `opened in block ${(opened[0] as Log).blockNumber}` });
@@ -120,7 +207,7 @@ export async function verifyRound(input: VerifyInput): Promise<RoundReport> {
   const refunds = of('RoundRefunding');
   if (refunds.length > 1) {
     push({ id: 'refund.once', title: 'Refunded at most once', status: 'fail', actual: `${refunds.length} RoundRefunding logs` });
-    return report;
+    return;
   }
   const refund = refunds[0];
   push({ id: 'state.refunding', title: 'Refunding: RoundRefunding log vs roundOf() status now',
@@ -129,7 +216,8 @@ export async function verifyRound(input: VerifyInput): Promise<RoundReport> {
     ...(refund === undefined && status === REFUNDING ? { note: 'the core reports a refund, but the endpoint returned no RoundRefunding log' } : {}) });
   const judgeRefund = (r: Log, ok: boolean, reason: string): void => {
     push({ id: 'refund.justified', title: 'Refund has a reason the chain shows', status: ok ? 'pass' : 'fail',
-      actual: `refunded from ${statusName(r.words[0] as bigint)} in block ${r.blockNumber}`, note: reason });
+      actual: `refunded from ${statusName(r.words[0] as bigint)} in block ${r.blockNumber}`, note: reason,
+      noteKey: 'refundedFrom', noteArgs: { from: statusName(r.words[0] as bigint), block: r.blockNumber.toString() } });
   };
   // Before any request there is no outcome to void, so only a refund from
   // OPEN or CLOSING is honest; the core cannot be in a later status yet.
@@ -146,7 +234,8 @@ export async function verifyRound(input: VerifyInput): Promise<RoundReport> {
   const coordinator = coordinatorWord as bigint;
   if (known === undefined) {
     push({ id: 'vrf.coordinator', title: "Core's VRF coordinator is Chainlink's", status: 'incomplete', actual: hexAddress(coordinator),
-      note: `this verifier has no Chainlink coordinator on record for chain ${chainId}` });
+      note: `this verifier has no Chainlink coordinator on record for chain ${chainId}`,
+      noteKey: 'noCoordinatorForChain', noteArgs: { chainId: chainId.toString() } });
   } else {
     compare('vrf.coordinator', "Core's VRF coordinator is Chainlink's", hexAddress(known.address), hexAddress(coordinator),
       { note: `expected value: ${known.source}, retrieved ${known.retrieved}` });
@@ -157,21 +246,24 @@ export async function verifyRound(input: VerifyInput): Promise<RoundReport> {
   if (committed.length === 0) {
     if (refund !== undefined && stateCommitBlock === 0n) {
       judgeRefundBeforeDraw(refund);
-      return report;
+      return;
     }
     push(stateCommitBlock === 0n
       ? { id: 'commit.exists', title: 'Entries committed', status: 'pending', note: 'the round has not closed yet' }
       : { id: 'commit.exists', title: 'Entries committed', status: 'incomplete',
           note: `the core reports a commitment at block ${stateCommitBlock}, but the endpoint returned no EntryCommitted log` });
-    return report;
+    return;
   }
   if (committed.length > 1) {
     push({ id: 'commit.once', title: 'Commitment emitted exactly once', status: 'fail', actual: `${committed.length} EntryCommitted logs` });
-    return report;
+    return;
   }
   const commitLog = committed[0] as Log;
   const [commitment, committedTotal, commitBlock] = commitLog.words as [bigint, bigint, bigint];
   push({ id: 'commit.once', title: 'Commitment emitted exactly once', status: 'pass' });
+  // Freeze is round-level: EntryCommitted is emitted once and the commitment is
+  // byte-identical across every nonce (§3), so one freeze step covers the round.
+  recordStep({ step: 'freeze', ...ref(commitLog) });
 
   const purchaseLogs = of('TicketsPurchased');
   const late = purchaseLogs.filter((p) => chainOrder(p, commitLog) > 0);
@@ -180,12 +272,16 @@ export async function verifyRound(input: VerifyInput): Promise<RoundReport> {
 
   const ordered = orderPurchases(purchaseLogs.map(purchaseFromLog));
   const recomputed = computeCommitment(keccak, ordered);
+  // The entry list the verifier rebuilt, exposed for download even when a check
+  // fails. The envelope values come from §10 and the EntryCommitted log (§7).
+  report.entries = ordered;
+  report.entryEnvelope = { chainId, coreAddress: core, roundId, entryCommitment: commitment, totalTickets: committedTotal, commitBlock };
   const tiling = findTilingDefect(ordered, committedTotal);
   if (recomputed.totalTickets < committedTotal) {
     push({ id: 'entries.complete', title: 'Purchase logs cover every committed ticket', status: 'incomplete',
       expected: committedTotal.toString(), actual: recomputed.totalTickets.toString(),
       note: 'purchase logs are missing: the endpoint has likely pruned old logs. If a full-history endpoint shows the same, the contract committed to entries it never emitted, which is a failure.' });
-    return report;
+    return;
   }
   push({ id: 'entries.tiling', title: 'Purchase ranges tile 0 … totalTickets-1 with no gap or overlap', status: tiling === undefined ? 'pass' : 'fail',
     ...(tiling !== undefined ? { actual: tiling } : {}) });
@@ -203,6 +299,8 @@ export async function verifyRound(input: VerifyInput): Promise<RoundReport> {
     push({ id: 'request.afterCommit', title: 'Request is in a later block than the commitment', nonce: r.nonce,
       status: r.log.blockNumber > commitBlock ? 'pass' : 'fail', expected: `> ${commitBlock}`, actual: r.log.blockNumber.toString(),
       note: `requestId ${r.requestId}` });
+    // A nonce whose request was retried has two request steps (§4); both appear.
+    recordStep({ step: 'request', nonce: r.nonce, requestId: r.requestId, ...ref(r.log) });
   }
   const cancelled = of('RoundCancelled');
   if (cancelled.length > 0) {
@@ -213,10 +311,10 @@ export async function verifyRound(input: VerifyInput): Promise<RoundReport> {
   if (requests.length === 0) {
     if (refund !== undefined) {
       judgeRefundBeforeDraw(refund);
-      return report;
+      return;
     }
     push({ id: 'draw.requested', title: 'Randomness requested', status: 'pending', note: 'committed, but no request yet' });
-    return report;
+    return;
   }
   const maxNonce = requests.reduce((m, r) => (r.nonce > m ? r.nonce : m), 0n);
   const missing = Array.from({ length: Number(maxNonce) }, (_, i) => BigInt(i + 1)).filter((n) => !requests.some((r) => r.nonce === n));
@@ -284,6 +382,8 @@ export async function verifyRound(input: VerifyInput): Promise<RoundReport> {
         hex32(seedFromOutputSeed(keccak, vrf.words[0] as bigint).seed), hex32(seed), { nonce: n, note: `outputSeed ${hex32(vrf.words[0] as bigint)}` });
       compare('seed.sameTx', 'Seed stored in the same block the coordinator fulfilled it', vrf.blockNumber.toString(), fulfilment.blockNumber.toString(), { nonce: n });
     }
+    // Fulfil step for this nonce, with the coordinator's log alongside (§8).
+    recordStep({ step: 'fulfil', nonce: n, requestId, ...ref(fulfilment), ...(vrf !== undefined ? { coordinator: ref(vrf) } : {}) });
 
     // Excluded set from chain events alone: every range of every earlier
     // winner (§8, "Deriving the excluded set without trusting anyone").
@@ -316,6 +416,7 @@ export async function verifyRound(input: VerifyInput): Promise<RoundReport> {
       continue;
     }
     winnerOf.set(n, win);
+    recordStep({ step: 'derive', nonce: n, ...ref(win) });
     const announcedIndex = win.words[1] as bigint;
     const announcedWinner = win.topics[1] as bigint;
     if (derived.outcome === 'revert') {
@@ -340,7 +441,7 @@ export async function verifyRound(input: VerifyInput): Promise<RoundReport> {
     push({ id: 'refund.final', title: 'No draw activity after the refund', status: after.length === 0 ? 'pass' : 'fail',
       ...(after.length > 0 ? { actual: after.map((l) => `${l.name} in block ${l.blockNumber}`).join(', ') } : {}) });
   }
-  return report;
+  return;
 
   // The rule for each status a round can refund from, once randomness was
   // requested (PUBLIC-SPEC §4 "Refunds").
@@ -378,6 +479,41 @@ export async function verifyRound(input: VerifyInput): Promise<RoundReport> {
   }
 }
 
+// Timestamps are references, not checks (§8). Fetched one call per distinct
+// step block, at or before the run's pinned block, and attached to every step
+// (and coordinator sub-step) in that block. A block the endpoint cannot serve
+// leaves those steps without a timestamp; the rest of the report stands.
+async function fillStepTimestamps(rpc: Rpc, steps: readonly StepEvidence[]): Promise<void> {
+  const byBlock = new Map<bigint, StepRef[]>();
+  for (const s of steps) {
+    let g = byBlock.get(s.blockNumber);
+    if (g === undefined) byBlock.set(s.blockNumber, (g = []));
+    g.push(s);
+    if (s.coordinator !== undefined) {
+      let c = byBlock.get(s.coordinator.blockNumber);
+      if (c === undefined) byBlock.set(s.coordinator.blockNumber, (c = []));
+      c.push(s.coordinator);
+    }
+  }
+  for (const [blockNumber, group] of byBlock) {
+    const ts = await blockTimestamp(rpc, blockNumber);
+    if (ts !== undefined) for (const r of group) r.blockTimestamp = ts;
+  }
+}
+
+async function blockTimestamp(rpc: Rpc, blockNumber: bigint): Promise<bigint | undefined> {
+  try {
+    const b = await rpc.request('eth_getBlockByNumber', [quantity(blockNumber), false]);
+    if (typeof b !== 'object' || b === null) return undefined;
+    const t = (b as { timestamp?: unknown }).timestamp;
+    return typeof t === 'string' && /^0x[0-9a-fA-F]+$/.test(t) ? BigInt(t) : undefined;
+  } catch {
+    // A reference, never a check: a block the endpoint will not serve is a
+    // missing timestamp, not a failed draw.
+    return undefined;
+  }
+}
+
 // Returns a description of the first defect, or undefined if the ranges
 // tile [0, total) exactly in purchase order (PUBLIC-SPEC §8).
 export function findTilingDefect(ordered: readonly Purchase[], total: bigint): string | undefined {
@@ -412,6 +548,7 @@ function checkDescriptor(keccak: Keccak256, bytes: Uint8Array, committed: bigint
     push({ id: 'descriptor.hash', title, status: 'fail', expected: hex32(committed), actual: `rejected at ${r.stage}: ${r.reason}` });
   } else {
     push({ id: 'descriptor.hash', title, status: 'unverifiable', expected: hex32(committed),
-      note: `descriptor declares schemaVersion ${r.foundVersion}; this verifier supports ${r.supportedVersions.join(', ')}` });
+      note: `descriptor declares schemaVersion ${r.foundVersion}; this verifier supports ${r.supportedVersions.join(', ')}`,
+      noteKey: 'descriptorUnverifiable', noteArgs: { found: r.foundVersion.toString(), supported: r.supportedVersions.join(', ') } });
   }
 }

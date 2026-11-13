@@ -1,7 +1,7 @@
 import type { Purchase } from './commitment.ts';
 import { bytesToHex, hex32, hexToBytes } from './hex.ts';
 import type { Keccak256 } from './keccak.ts';
-import { parseQuantity, quantity, RpcError, type Rpc } from './rpc.ts';
+import { EndpointError, parseQuantity, quantity, RpcError, type Rpc } from './rpc.ts';
 
 // Event signatures, from PUBLIC-SPEC §2, §4 and §10. They were copied by hand
 // from the spec, never generated from the contract: a verifier that took its
@@ -48,6 +48,9 @@ export function eventTopics(keccak: Keccak256): Record<EventName, string> {
 }
 
 // A log reduced to what verification reads, with its position in the chain.
+// `transactionHash` is carried for the entry list (§7) and the step evidence a
+// verification surface must show (§8); it is a reference a reader can look up,
+// never a value a check compares, so it affects no verdict.
 export interface Log {
   name: EventName;
   address: bigint;
@@ -55,6 +58,7 @@ export interface Log {
   words: bigint[];
   blockNumber: bigint;
   logIndex: bigint;
+  transactionHash: bigint;
 }
 
 export interface LogQuery {
@@ -98,7 +102,7 @@ export async function fetchLogs(rpc: Rpc, topicsByName: Record<EventName, string
       }
       throw e;
     }
-    if (!Array.isArray(raw)) throw new Error(`eth_getLogs returned ${typeof raw}, not an array`);
+    if (!Array.isArray(raw)) throw new EndpointError('eth_getLogs', `returned ${typeof raw}, not an array`);
     for (const item of raw) out.push(checkLog(item, nameByTopic, query, from, to));
     from = to + 1n;
   }
@@ -106,9 +110,9 @@ export async function fetchLogs(rpc: Rpc, topicsByName: Record<EventName, string
 }
 
 function checkLog(item: unknown, nameByTopic: Map<string, EventName>, query: LogQuery, from: bigint, to: bigint): Log {
-  const l = item as { address?: unknown; topics?: unknown; data?: unknown; blockNumber?: unknown; logIndex?: unknown; removed?: unknown };
+  const l = item as { address?: unknown; topics?: unknown; data?: unknown; blockNumber?: unknown; logIndex?: unknown; transactionHash?: unknown; removed?: unknown };
   const fail = (why: string): never => {
-    throw new Error(`endpoint returned a log that does not match the query (${why}): ${JSON.stringify(item)}`);
+    throw new EndpointError('eth_getLogs', `returned a log that does not match the query (${why}): ${JSON.stringify(item)}`);
   };
   if (l.removed === true) fail('removed by a reorg');
   if (typeof l.address !== 'string' || BigInt(l.address) !== query.address) fail('wrong address');
@@ -130,7 +134,15 @@ function checkLog(item: unknown, nameByTopic: Map<string, EventName>, query: Log
   const words = Array.from({ length: shape.words }, (_, i) => BigInt(bytesToHex(data.subarray(32 * i, 32 * i + 32))));
   const blockNumber = parseQuantity(l.blockNumber, 'blockNumber');
   if (blockNumber < from || blockNumber > to) fail('outside the requested block range');
-  return { name, address: query.address, topics: indexed, words, blockNumber, logIndex: parseQuantity(l.logIndex, 'logIndex') };
+  // Parsed as strictly as any other field: an endpoint that cannot supply a
+  // well-formed 32-byte transaction hash is misbehaving, so the log does not
+  // match the query. The hash never enters a check, only the evidence (§8).
+  if (typeof l.transactionHash !== 'string' || !/^0x[0-9a-fA-F]{64}$/.test(l.transactionHash)) fail('missing or malformed transactionHash');
+  return {
+    name, address: query.address, topics: indexed, words, blockNumber,
+    logIndex: parseQuantity(l.logIndex, 'logIndex'),
+    transactionHash: BigInt(l.transactionHash as string),
+  };
 }
 
 export function chainOrder(a: { blockNumber: bigint; logIndex: bigint }, b: { blockNumber: bigint; logIndex: bigint }): number {
@@ -145,6 +157,7 @@ export function purchaseFromLog(log: Log): Purchase {
     endIndex: log.words[1] as bigint,
     blockNumber: log.blockNumber,
     logIndex: log.logIndex,
+    transactionHash: log.transactionHash,
   };
 }
 
@@ -161,7 +174,7 @@ export function orderPurchases(purchases: readonly Purchase[]): Purchase[] {
     const prev = sorted[i - 1] as Purchase;
     const cur = sorted[i] as Purchase;
     if (prev.blockNumber === cur.blockNumber && prev.logIndex === cur.logIndex) {
-      throw new Error(`two purchase logs at block ${cur.blockNumber} log index ${cur.logIndex}`);
+      throw new EndpointError('eth_getLogs', `two purchase logs at block ${cur.blockNumber} log index ${cur.logIndex}`);
     }
   }
   return sorted;
