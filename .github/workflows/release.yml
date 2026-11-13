@@ -1,14 +1,17 @@
-# Publishes @hapmarket/verify to npm when a version tag is pushed. The publish
-# carries npm provenance (publishConfig.provenance), which ties the tarball to
-# this commit in this public repo through the workflow's OIDC identity — so a
-# consumer can confirm the package was built from the source they can read,
-# not substituted. Actions are pinned to a commit, as in ci.yml.
+# Publishes @hapmarket/verify to npm when a version tag is pushed, via GitHub
+# OIDC "trusted publishing" — no npm token. npm authenticates as this repo's
+# workflow identity against the trusted publisher configured for the package on
+# npmjs, and attaches provenance automatically, tying the tarball to this commit
+# in this public repo so a consumer can confirm it was built from the source
+# they can read. Actions are pinned to a commit, as in ci.yml.
 #
 # The same offline checks ci.yml runs gate the publish: a tag never ships code
 # that would fail CI. prepack (npm run build) emits dist/ into the tarball.
 #
-# Requires: a repository secret NPM_TOKEN (an npm automation token for the
-# @hapmarket scope). Provenance additionally needs the id-token permission below.
+# Requires, one-time, on npmjs: a trusted publisher on @hapmarket/verify naming
+# this repo (HapMarket/hapmarket-verify) and this workflow (release.yml). Until
+# that is configured the publish step fails with an auth error. No NPM_TOKEN
+# secret is used; id-token: write below is what lets npm mint the OIDC token.
 
 name: release
 
@@ -30,6 +33,9 @@ jobs:
         with:
           node-version: 24
           registry-url: 'https://registry.npmjs.org'
+      # Trusted publishing (OIDC) needs npm >= 11.5.1; Node 24's bundled npm may
+      # be older, so install a recent one.
+      - run: npm install -g npm@latest
       - run: npm ci
       - run: npm run typecheck
       - run: npm test
@@ -42,7 +48,5 @@ jobs:
           tag="${GITHUB_REF_NAME#v}"
           pkg="$(node -p "require('./package.json').version")"
           [ "$tag" = "$pkg" ] || { echo "::error::tag $GITHUB_REF_NAME does not match package version $pkg"; exit 1; }
-      # prepack runs the build; --provenance is also set via publishConfig.
+      # prepack runs the build. Provenance is automatic under trusted publishing.
       - run: npm publish --provenance --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
