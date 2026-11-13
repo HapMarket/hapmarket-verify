@@ -156,7 +156,9 @@ describe('a lying endpoint is refused', () => {
     address: '0xa0ca23bfb669acad267a1acaf142cd4b3415e759',
     topics: [topics.EntryCommitted, '0x' + '1'.padStart(64, '0')],
     data: '0x' + '00'.repeat(96), blockNumber: '0x10', logIndex: '0x0',
+    transactionHash: '0x' + 'ab'.repeat(32),
   };
+  const { transactionHash: _omit, ...honestNoTxHash } = honest;
   const query = { address: core, names: ['EntryCommitted'] as EventName[], indexed: [1n], fromBlock: 1n, toBlock: 100n };
   const answering = (log: object) => ({ request: async () => [log] });
 
@@ -170,6 +172,8 @@ describe('a lying endpoint is refused', () => {
     ['outside the block range', { ...honest, blockNumber: '0x1000' }],
     ['removed by a reorg', { ...honest, removed: true }],
     ['with the wrong data length', { ...honest, data: '0x' + '00'.repeat(64) }],
+    ['with a malformed transactionHash', { ...honest, transactionHash: '0xnothex' }],
+    ['with no transactionHash', honestNoTxHash],
   ] as const) {
     test(`a log ${what}`, async () => {
       await assert.rejects(fetchLogs(answering(log), topics, query), /does not match the query/);

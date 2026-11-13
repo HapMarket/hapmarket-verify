@@ -41,6 +41,11 @@ describe('commitment vectors', () => {
           endIndex: parseDecimal(str(p['endIndex'], 'endIndex')),
           blockNumber: parseDecimal(str(p['block'], 'block')),
           logIndex: parseDecimal(str(p['logIndex'], 'logIndex')),
+          // The commitment folds in only buyer, startIndex and endIndex (§3);
+          // transactionHash is not part of it, so the commitment vectors do not
+          // carry one. A placeholder keeps the Purchase shape without affecting
+          // the hash the vector asserts.
+          transactionHash: 0n,
         }),
       );
       const { commitment, totalTickets } = computeCommitment(keccak, orderPurchases(purchases));

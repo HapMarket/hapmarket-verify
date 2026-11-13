@@ -39,6 +39,8 @@ Result: PASS. Every check passed: the round, as recorded on-chain, reproduces fr
 
 When values disagree, the tool prints both of them, not just "FAIL".
 
+It also prints the four protocol steps — freeze, request, fulfil, derive — for every draw nonce, with each one's block, UTC timestamp and full transaction hash, so you can look any of them up on a block explorer or another endpoint. **These are references your endpoint reported, not things the tool checked:** no tick stands beside a timestamp or a hash, and neither ever changes the result. What the tool verifies are the computations, each shown as PASS or FAIL. A timestamp your endpoint won't serve is shown as unavailable, never guessed.
+
 ### Options
 
 | Flag | Meaning |
@@ -47,6 +49,7 @@ When values disagree, the tool prints both of them, not just "FAIL".
 | `--round <id>` | The round to check. |
 | `--core <address> --from-block <n>` | Check a round on another core contract, such as a superseded one. `--from-block` is the block the core was created in. |
 | `--descriptor <file>` | Also check a prize description file against the hash the round committed to when it opened. |
+| `--entries <file>` | Also write the reconstructed entry list to a file. A `.json` or `.csv` extension chooses the form. The bytes are identical to the operator's published file for the round, so comparing them is a hash check. Written even when a check fails — a failing list is exactly what you want to inspect. |
 
 The tool reads the chain ID from the endpoint. Without `--core`, it uses that chain's current core from [`PUBLIC-SPEC.md` §10](spec-public/PUBLIC-SPEC.md#10-deployments). That table is only a convenience: every check holds for whatever core you name, so you can check the address against a block explorer and pass it yourself.
 
